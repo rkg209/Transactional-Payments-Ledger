@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.3.5</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>org.ledger</groupId>
+  <artifactId>payments-ledger</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <name>Transactional Payments Ledger</name>
+  <description>A double-entry payments ledger that provably never loses, creates, or double-charges money.</description>
+
+  <properties>
+    <java.version>21</java.version>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+    <!--
+      1.21.3+ is required, not merely preferred: the local Docker Engine speaks
+      API 1.55, and the docker-java client bundled with Testcontainers 1.20.x
+      cannot negotiate with it (every connection strategy fails with HTTP 400).
+      Do not downgrade this without re-testing against the running engine.
+    -->
+    <testcontainers.version>1.21.3</testcontainers.version>
+    <!--
+      google-java-format 1.19.x reaches into javac internals that changed in
+      recent JDK 21 builds and dies with NoSuchMethodError on
+      Log$DeferredDiagnosticHandler.getDiagnostics(). 1.25.2+ is required.
+    -->
+    <spotless.version>2.44.3</spotless.version>
+    <google-java-format.version>1.27.0</google-java-format.version>
+    <postgres.image>postgres:16-alpine</postgres.image>
+
+    <!-- Docker Engine API version Testcontainers negotiates with. See the
+         failsafe plugin config below for why this must be set explicitly. -->
+    <docker.api.version>1.44</docker.api.version>
+  </properties>
+
+  <dependencies>
+    <!-- Web + Actuator -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- Metrics: Prometheus scrape endpoint (NFR-21) -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+
+    <!--
+      Data access: jOOQ only. JPA / Hibernate / Spring Data JPA are PROHIBITED
+      (CON-2). The whole point of this project is controlling exactly what SQL
+      runs and what locks it takes.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jooq</artifactId>
+    </dependency>
+
+    <!-- Migrations -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Testing: real PostgreSQL via Testcontainers. In-memory DBs are
+         PROHIBITED for correctness tests (CON-9, NFR-17). H2 does not implement
+         PostgreSQL's locking, isolation, or triggers, so a green test against it
+         would prove nothing about the behavior we depend on. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>${testcontainers.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+
+      <!--
+        Spotless: formatting is enforced on every edit by the format-and-build
+        hook (NFR-26). `mvn spotless:apply` fixes; `mvn spotless:check` verifies.
+      -->
+      <plugin>
+        <groupId>com.diffplug.spotless</groupId>
+        <artifactId>spotless-maven-plugin</artifactId>
+        <version>${spotless.version}</version>
+        <configuration>
+          <java>
+            <googleJavaFormat>
+              <version>${google-java-format.version}</version>
+              <style>GOOGLE</style>
+            </googleJavaFormat>
+            <removeUnusedImports/>
+          </java>
+        </configuration>
+      </plugin>
+
+      <!-- Integration tests (*IT) run in the `verify` phase. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <systemPropertyVariables>
+            <!--
+              REQUIRED. Without this, Testcontainers cannot reach the Docker
+              daemon at all.
+
+              docker-java (bundled with Testcontainers) defaults to Docker Engine
+              API v1.32. Docker Engine 25+ refuses anything below v1.40, and
+              answers a v1.32 request with an HTTP 400 and an empty stub body.
+              Testcontainers reads that as "no valid Docker environment" and every
+              connection strategy fails, which makes the real cause (an API
+              version negotiation failure) look like a missing Docker install.
+
+              Pinning the API version to 1.44 (Docker 25.0, Jan 2024) makes the
+              handshake succeed. See progress_report.md entry [002].
+            -->
+            <api.version>${docker.api.version}</api.version>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+
+      <!-- Unit tests get the same Docker API pin, for when they need containers. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <api.version>${docker.api.version}</api.version>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

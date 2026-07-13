@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Build & test (real Postgres via Testcontainers)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Check formatting
+        run: mvn -B spotless:check
+
+      # Testcontainers spins up a real postgres:16 container inside the runner.
+      # We deliberately do NOT use a GitHub service container: the tests must
+      # exercise the same PostgreSQL, with the same triggers and locking, that
+      # runs locally and in production (NFR-17, CON-9).
+      - name: Build & test
+        run: mvn -B verify
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+          if-no-files-found: ignore

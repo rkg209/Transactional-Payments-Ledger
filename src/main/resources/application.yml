@@ -1,0 +1,56 @@
+spring:
+  application:
+    name: payments-ledger
+
+  # Java 21 virtual threads (CON-1). A transfer blocked on SELECT ... FOR UPDATE
+  # parks its virtual thread instead of pinning a platform thread, which is what
+  # makes a high-concurrency pessimistic-locking server realistic at all.
+  threads:
+    virtual:
+      enabled: true
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/ledger}
+    username: ${SPRING_DATASOURCE_USERNAME:ledger}
+    password: ${SPRING_DATASOURCE_PASSWORD:ledger}
+    hikari:
+      # Connection-pool size bounds real concurrency against the database. It is
+      # tuned deliberately in SPEC 0008 against the benchmark, not guessed here.
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      # HikariCP must never silently retry a failed transaction: a retried
+      # transfer that the application does not know about could double-post.
+      auto-commit: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+
+  jooq:
+    sql-dialect: postgres
+
+ledger:
+  # Selected at startup. Both strategies are implemented and benchmarked
+  # (SPEC 0004 / 0008); neither is a default we settled for.
+  concurrency-strategy: ${CONCURRENCY_STRATEGY:pessimistic}
+  isolation-level: ${ISOLATION_LEVEL:read_committed}
+  reconciliation:
+    interval-ms: ${RECONCILIATION_INTERVAL_MS:60000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: payments-ledger
+
+logging:
+  level:
+    root: INFO
+    org.ledger: INFO
+    org.jooq.tools.LoggerListener: DEBUG

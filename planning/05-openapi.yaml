@@ -1,0 +1,1033 @@
+```yaml
+openapi: 3.0.3
+info:
+  title: Transactional Payments Ledger API
+  description: |
+    A double-entry bookkeeping payments ledger implementing atomic transfers,
+    idempotent request handling, multi-step saga orchestration, and continuous
+    reconciliation. Every transfer produces a balanced set of immutable ledger
+    entries that sum to zero.
+
+    ## Authentication
+    All endpoints require an API key supplied in the `Authorization` header
+    using the `ApiKey` scheme.
+
+    ## Idempotency
+    All mutating endpoints (`POST`, `PUT`, `PATCH`) require an
+    `Idempotency-Key` header. Supplying the same key with an identical request
+    body replays the original response exactly. Supplying the same key with a
+    different request body returns HTTP 422.
+
+    ## Amounts
+    All monetary amounts are expressed as **minor units** (e.g. cents for USD)
+    as 64-bit integers. Floating-point values are never accepted or returned.
+
+    ## Versioning
+    The API is versioned via the URL path prefix `/v1`. Breaking changes
+    increment the version number.
+  version: "1.0.0"
+  contact:
+    name: Ledger Platform Team
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:8080/v1
+    description: Local development
+  - url: https://ledger.example.com/v1
+    description: Production
+
+tags:
+  - name: Accounts
+    description: Account lifecycle management and balance queries.
+  - name: Transfers
+    description: Atomic single-step transfers between accounts.
+  - name: Sagas
+    description: Multi-step transfer orchestration with automatic compensation.
+  - name: Reconciliation
+    description: Invariant verification and drift reporting.
+  - name: Health
+    description: Liveness, readiness, and operational health checks.
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: |
+        Pass your API key as `ApiKey <token>`.
+        Example: `Authorization: ApiKey dev-secret-key`
+
+  # -------------------------------------------------------------------------
+  # Reusable parameters
+  # -------------------------------------------------------------------------
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Client-generated unique key (UUID v4 recommended, max 255 characters)
+        that makes the request idempotent. Identical keys with identical
+        request bodies replay the original response. Identical keys with
+        different bodies return HTTP 422.
+      schema:
+        type: string
+        maxLength: 255
+        example: "550e8400-e29b-41d4-a716-446655440000"
+
+    AccountId:
+      name: accountId
+      in: path
+      required: true
+      description: UUID of the account.
+      schema:
+        type: string
+        format: uuid
+        example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+    TransferId:
+      name: transferId
+      in: path
+      required: true
+      description: UUID of the transfer.
+      schema:
+        type: string
+        format: uuid
+        example: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+
+    SagaId:
+      name: sagaId
+      in: path
+      required: true
+      description: UUID of the saga.
+      schema:
+        type: string
+        format: uuid
+        example: "c3d4e5f6-a7b8-9012-cdef-123456789012"
+
+    ReportId:
+      name: reportId
+      in: path
+      required: true
+      description: UUID of the reconciliation report.
+      schema:
+        type: string
+        format: uuid
+        example: "d4e5f6a7-b8c9-0123-defa-234567890123"
+
+    PageNumber:
+      name: page
+      in: query
+      required: false
+      description: Zero-based page number.
+      schema:
+        type: integer
+        format: int32
+        minimum: 0
+        default: 0
+        example: 0
+
+    PageSize:
+      name: size
+      in: query
+      required: false
+      description: Number of items per page (max 100).
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 100
+        default: 20
+        example: 20
+
+    SortBy:
+      name: sort
+      in: query
+      required: false
+      description: |
+        Sort field and direction in the format `field,direction`.
+        Example: `created_at,desc`.
+      schema:
+        type: string
+        example: "created_at,desc"
+
+  # -------------------------------------------------------------------------
+  # Reusable schemas
+  # -------------------------------------------------------------------------
+  schemas:
+
+    # -- Pagination wrapper --------------------------------------------------
+    PageMetadata:
+      type: object
+      description: Pagination metadata included in all list responses.
+      required:
+        - page
+        - size
+        - totalElements
+        - totalPages
+      properties:
+        page:
+          type: integer
+          format: int32
+          description: Current zero-based page number.
+          example: 0
+        size:
+          type: integer
+          format: int32
+          description: Number of items in this page.
+          example: 20
+        totalElements:
+          type: integer
+          format: int64
+          description: Total number of items across all pages.
+          example: 142
+        totalPages:
+          type: integer
+          format: int32
+          description: Total number of pages.
+          example: 8
+
+    # -- Account schemas -----------------------------------------------------
+    CreateAccountRequest:
+      type: object
+      description: Request body for creating a new account.
+      required:
+        - name
+        - currency
+      properties:
+        name:
+          type: string
+          description: Human-readable account label. Must not be blank.
+          minLength: 1
+          maxLength: 255
+          example: "Alice Operating Account"
+        currency:
+          type: string
+          description: ISO 4217 three-letter currency code.
+          pattern: "^[A-Z]{3}$"
+          example: "USD"
+        minBalance:
+          type: integer
+          format: int64
+          description: |
+            Minimum allowable balance in minor units. Transfers that would
+            reduce the balance below this threshold are rejected with HTTP 422.
+            Must be >= 0. Defaults to 0.
+          minimum: 0
+          default: 0
+          example: 0
+
+    AccountResponse:
+      type: object
+      description: Representation of a single account.
+      required:
+        - id
+        - name
+        - currency
+        - minBalance
+        - balance
+        - version
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique account identifier.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        name:
+          type: string
+          description: Human-readable account label.
+          example: "Alice Operating Account"
+        currency:
+          type: string
+          description: ISO 4217 three-letter currency code.
+          example: "USD"
+        minBalance:
+          type: integer
+          format: int64
+          description: Minimum allowable balance in minor units.
+          example: 0
+        balance:
+          type: integer
+          format: int64
+          description: |
+            Current materialized balance in minor units. This is a
+            denormalized cache updated atomically with each transfer.
+            The authoritative balance is the sum of ledger entries,
+            verified continuously by the reconciliation service.
+          example: 150000
+        version:
+          type: integer
+          format: int64
+          description: |
+            Optimistic concurrency version counter. Incremented on every
+            balance update. Exposed for diagnostic purposes only; clients
+            must not use this for their own concurrency control.
+          example: 7
+        createdAt:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of account creation (UTC).
+          example: "2024-01-15T09:00:00Z"
+        updatedAt:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of last account update (UTC).
+          example: "2024-01-15T14:32:10Z"
+
+    AccountListResponse:
+      type: object
+      description: Paginated list of accounts.
+      required:
+        - content
+        - page
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccountResponse'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+
+    BalanceResponse:
+      type: object
+      description: Current balance of a single account.
+      required:
+        - accountId
+        - currency
+        - balance
+        - minBalance
+        - asOf
+      properties:
+        accountId:
+          type: string
+          format: uuid
+          description: Account identifier.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        currency:
+          type: string
+          description: ISO 4217 three-letter currency code.
+          example: "USD"
+        balance:
+          type: integer
+          format: int64
+          description: Materialized balance in minor units.
+          example: 150000
+        minBalance:
+          type: integer
+          format: int64
+          description: Minimum allowable balance in minor units.
+          example: 0
+        asOf:
+          type: string
+          format: date-time
+          description: |
+            Timestamp at which the balance was read. Because the balance is
+            materialized, this reflects the last committed transfer, not the
+            current wall-clock time.
+          example: "2024-01-15T14:32:10Z"
+
+    # -- Transfer schemas ----------------------------------------------------
+    CreateTransferRequest:
+      type: object
+      description: Request body for initiating a single atomic transfer.
+      required:
+        - fromAccountId
+        - toAccountId
+        - amount
+        - currency
+      properties:
+        fromAccountId:
+          type: string
+          format: uuid
+          description: UUID of the account to debit.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        toAccountId:
+          type: string
+          format: uuid
+          description: |
+            UUID of the account to credit. Must differ from `fromAccountId`.
+          example: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+        amount:
+          type: integer
+          format: int64
+          description: |
+            Transfer amount in minor currency units. Must be > 0.
+          minimum: 1
+          example: 5000
+        currency:
+          type: string
+          description: |
+            ISO 4217 three-letter currency code. Must match the currency of
+            both accounts.
+          pattern: "^[A-Z]{3}$"
+          example: "USD"
+        description:
+          type: string
+          description: Optional human-readable memo for this transfer.
+          maxLength: 500
+          example: "Invoice #1042 payment"
+
+    TransferResponse:
+      type: object
+      description: Representation of a completed or pending transfer.
+      required:
+        - id
+        - fromAccountId
+        - toAccountId
+        - amount
+        - currency
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique transfer identifier.
+          example: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+        idempotencyKey:
+          type: string
+          description: The client-supplied idempotency key, if present.
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        fromAccountId:
+          type: string
+          format: uuid
+          description: UUID of the debited account.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        toAccountId:
+          type: string
+          format: uuid
+          description: UUID of the credited account.
+          example: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+        amount:
+          type: integer
+          format: int64
+          description: Transfer amount in minor currency units.
+          example: 5000
+        currency:
+          type: string
+          description: ISO 4217 three-letter currency code.
+          example: "USD"
+        status:
+          type: string
+          description: Current transfer status.
+          enum:
+            - PENDING
+            - COMPLETED
+            - FAILED
+          example: "COMPLETED"
+        description:
+          type: string
+          description: Optional human-readable memo.
+          example: "Invoice #1042 payment"
+        ledgerEntries:
+          type: array
+          description: |
+            The balanced pair of ledger entries produced by this transfer.
+            Present on successful completion; absent if the transfer is still
+            PENDING.
+          items:
+            $ref: '#/components/schemas/LedgerEntryResponse'
+        createdAt:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of transfer creation (UTC).
+          example: "2024-01-15T14:32:10Z"
+        updatedAt:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of last status update (UTC).
+          example: "2024-01-15T14:32:10Z"
+
+    TransferListResponse:
+      type: object
+      description: Paginated list of transfers.
+      required:
+        - content
+        - page
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransferResponse'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+
+    LedgerEntryResponse:
+      type: object
+      description: A single immutable ledger entry representing one side of a transfer.
+      required:
+        - id
+        - transferId
+        - accountId
+        - direction
+        - amountMinor
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique ledger entry identifier.
+          example: "e5f6a7b8-c9d0-1234-efab-567890123456"
+        transferId:
+          type: string
+          format: uuid
+          description: UUID of the parent transfer.
+          example: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+        accountId:
+          type: string
+          format: uuid
+          description: UUID of the account this entry belongs to.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        direction:
+          type: string
+          description: |
+            `DEBIT` decreases the account balance; `CREDIT` increases it.
+          enum:
+            - DEBIT
+            - CREDIT
+          example: "DEBIT"
+        amountMinor:
+          type: integer
+          format: int64
+          description: Absolute amount in minor currency units. Always > 0.
+          minimum: 1
+          example: 5000
+        createdAt:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of entry creation (UTC). Immutable.
+          example: "2024-01-15T14:32:10Z"
+
+    LedgerEntryListResponse:
+      type: object
+      description: Paginated list of ledger entries for an account.
+      required:
+        - content
+        - page
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/LedgerEntryResponse'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+
+    # -- Saga schemas --------------------------------------------------------
+    SagaStepRequest:
+      type: object
+      description: Definition of one step in a saga transfer.
+      required:
+        - type
+        - accountId
+        - amount
+      properties:
+        type:
+          type: string
+          description: Step type discriminator.
+          enum:
+            - DEBIT
+            - CREDIT
+          example: "DEBIT"
+        accountId:
+          type: string
+          format: uuid
+          description: UUID of the account to debit or credit.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        amount:
+          type: integer
+          format: int64
+          description: Amount in minor currency units. Must be > 0.
+          minimum: 1
+          example: 5000
+
+    CreateSagaTransferRequest:
+      type: object
+      description: |
+        Request body for initiating a multi-step saga transfer. The steps
+        must be balanced: the sum of all DEBIT amounts must equal the sum of
+        all CREDIT amounts.
+      required:
+        - currency
+        - steps
+      properties:
+        currency:
+          type: string
+          description: |
+            ISO 4217 three-letter currency code. All accounts referenced in
+            the steps must use this currency.
+          pattern: "^[A-Z]{3}$"
+          example: "USD"
+        steps:
+          type: array
+          description: |
+            Ordered list of saga steps. Must contain at least one DEBIT and
+            one CREDIT. Steps execute in order; on failure, completed steps
+            are compensated in reverse order.
+          minItems: 2
+          items:
+            $ref: '#/components/schemas/SagaStepRequest'
+        description:
+          type: string
+          description: Optional human-readable description of the saga.
+          maxLength: 500
+          example: "Split payment: A pays B and C"
+
+    SagaStepResponse:
+      type: object
+      description: Current state of one step within a saga.
+      required:
+        - id
+        - sagaId
+        - stepIndex
+        - stepType
+        - state
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique step identifier.
+          example: "f6a7b8c9-d0e1-2345-fabc-678901234567"
+        sagaId:
+          type: string
+          format: uuid
+          description: UUID of the parent saga.
+          example: "c3d4e5f6-a7b8-9012-cdef-123456789012"
+        stepIndex:
+          type: integer
+          format: int32
+          description: Zero-based position of this step in the saga.
+          example: 0
+        stepType:
+          type: string
+          description: Step type discriminator.
+          enum:
+            - DEBIT_ACCOUNT
+            - CREDIT_ACCOUNT
+            - RECORD_TRANSFER
+          example: "DEBIT_ACCOUNT"
+        state:
+          type: string
+          description: Current lifecycle state of this step.
+          enum:
+            - PENDING
+            - IN_PROGRESS
+            - COMPLETED
+            - COMPENSATED
+          example: "COMPLETED"
+        forwardResult:
+          type: object
+          description: |
+            The result produced by the step's forward execution, serialized
+            as a JSON object. Present only when `state` is `COMPLETED` or
+            `COMPENSATED`. The schema varies by `stepType`.
+          additionalProperties: true
+          nullable: true
+          example:
+            transferId: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T14:32:10Z"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T14:32:11Z"
+
+    SagaResponse:
+      type: object
+      description: Representation of a saga and its steps.
+      required:
+        - id
+        - type
+        - state
+        - currentStep
+        - currency
+        - steps
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique saga identifier.
+          example: "c3d4e5f6-a7b8-9012-cdef-123456789012"
+        type:
+          type: string
+          description: Saga type discriminator.
+          example: "MULTI_ACCOUNT_TRANSFER"
+        state:
+          type: string
+          description: Current lifecycle state of the saga.
+          enum:
+            - STARTED
+            - COMPLETED
+            - COMPENSATING
+            - COMPENSATED
+            - FAILED
+          example: "COMPLETED"
+        currentStep:
+          type: integer
+          format: int32
+          description: Zero-based index of the step currently executing or last completed.
+          example: 2
+        currency:
+          type: string
+          description: ISO 4217 three-letter currency code.
+          example: "USD"
+        description:
+          type: string
+          description: Optional human-readable description.
+          nullable: true
+          example: "Split payment: A pays B and C"
+        steps:
+          type: array
+          description: Ordered list of step states.
+          items:
+            $ref: '#/components/schemas/SagaStepResponse'
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T14:32:10Z"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2024-01-15T14:32:12Z"
+
+    SagaListResponse:
+      type: object
+      description: Paginated list of sagas.
+      required:
+        - content
+        - page
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/SagaResponse'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+
+    # -- Reconciliation schemas ----------------------------------------------
+    AccountDriftDetail:
+      type: object
+      description: Drift detail for a single account.
+      required:
+        - accountId
+        - materializedBalance
+        - entrySum
+        - drift
+      properties:
+        accountId:
+          type: string
+          format: uuid
+          description: UUID of the drifted account.
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        materializedBalance:
+          type: integer
+          format: int64
+          description: The `balance` column value at the time of the check.
+          example: 150000
+        entrySum:
+          type: integer
+          format: int64
+          description: Sum of ledger entries for this account at the time of the check.
+          example: 149900
+        drift:
+          type: integer
+          format: int64
+          description: "`materializedBalance - entrySum`. Non-zero indicates drift."
+          example: 100
+
+    ReconciliationReportResponse:
+      type: object
+      description: Output of a single reconciliation check run.
+      required:
+        - id
+        - runAt
+        - globalSum
+        - driftDetected
+        - accountsChecked
+        - accountsDrifted
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique report identifier.
+          example: "d4e5f6a7-b8c9-0123-defa-234567890123"
+        runAt:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp when the check ran (UTC).
+          example: "2024-01-15T14:00:00Z"
+        globalSum:
+          type: integer
+          format: int64
+          description: |
+            Sum of all ledger entries with sign applied
+            (`CREDIT - DEBIT`). Must be 0 for the invariant to hold.
+          example: 0
+        driftDetected:
+          type: boolean
+          description: |
+            `true` if `globalSum != 0` or any per-account drift was found.
+          example: false
+        accountsChecked:
+          type: integer
+          format: int32
+          description: Number of accounts included in the per-account check.
+          example: 42
+        accountsDrifted:
+          type: integer
+          format: int32
+          description: Number of accounts where materialized balance != entry sum.
+          example: 0
+        driftDetails:
+          type: array
+          description: |
+            Per-account drift details. Present only when `driftDetected` is
+            `true`. Empty array when no drift was found.
+          items:
+            $ref: '#/components/schemas/AccountDriftDetail'
+          nullable: true
+
+    ReconciliationReportListResponse:
+      type: object
+      description: Paginated list of reconciliation reports.
+      required:
+        - content
+        - page
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReconciliationReportResponse'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+
+    # -- Health schemas ------------------------------------------------------
+    HealthStatus:
+      type: string
+      enum:
+        - UP
+        - DOWN
+        - DEGRADED
+      description: Aggregate health status.
+
+    ComponentHealth:
+      type: object
+      description: Health status of a single system component.
+      required:
+        - status
+      properties:
+        status:
+          $ref: '#/components/schemas/HealthStatus'
+        details:
+          type: object
+          description: Component-specific diagnostic details.
+          additionalProperties: true
+          nullable: true
+
+    HealthResponse:
+      type: object
+      description: Aggregate health of the service and its dependencies.
+      required:
+        - status
+        - components
+      properties:
+        status:
+          $ref: '#/components/schemas/HealthStatus'
+        version:
+          type: string
+          description: Application version string.
+          example: "1.0.0"
+        components:
+          type: object
+          description: Health of individual components.
+          properties:
+            database:
+              $ref: '#/components/schemas/ComponentHealth'
+            connectionPool:
+              $ref: '#/components/schemas/ComponentHealth'
+            reconciliation:
+              $ref: '#/components/schemas/ComponentHealth'
+
+    # -- Error schemas -------------------------------------------------------
+    ErrorResponse:
+      type: object
+      description: |
+        Structured error response returned for all non-2xx responses.
+        The `errorCode` field is stable across versions and suitable for
+        programmatic handling. The `message` field is human-readable and
+        may change between versions.
+      required:
+        - errorCode
+        - message
+        - status
+        - timestamp
+        - path
+      properties:
+        errorCode:
+          type: string
+          description: Stable machine-readable error code.
+          enum:
+            - INSUFFICIENT_FUNDS
+            - ACCOUNT_NOT_FOUND
+            - TRANSFER_NOT_FOUND
+            - SAGA_NOT_FOUND
+            - REPORT_NOT_FOUND
+            - CONFLICT_RETRY_EXHAUSTED
+            - IDEMPOTENCY_KEY_REUSE
+            - SAGA_COMPENSATED
+            - CURRENCY_MISMATCH
+            - SAME_ACCOUNT_TRANSFER
+            - VALIDATION_ERROR
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - INTERNAL_ERROR
+            - SERVICE_UNAVAILABLE
+          example: "INSUFFICIENT_FUNDS"
+        message:
+          type: string
+          description: Human-readable description of the error.
+          example: "Account a1b2c3d4 has insufficient funds for this transfer."
+        status:
+          type: integer
+          format: int32
+          description: HTTP status code.
+          example: 422
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of the error (UTC).
+          example: "2024-01-15T14:32:10Z"
+        path:
+          type: string
+          description: Request path that produced the error.
+          example: "/v1/transfers"
+        idempotencyKey:
+          type: string
+          description: |
+            The idempotency key from the request, if present. Included to
+            help clients correlate errors with their original requests.
+          nullable: true
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        details:
+          type: array
+          description: |
+            Field-level validation errors. Present only when
+            `errorCode` is `VALIDATION_ERROR`.
+          nullable: true
+          items:
+            type: object
+            required:
+              - field
+              - message
+            properties:
+              field:
+                type: string
+                description: The request field that failed validation.
+                example: "amount"
+              message:
+                type: string
+                description: Human-readable validation failure reason.
+                example: "must be greater than 0"
+              rejectedValue:
+                description: The value that was rejected.
+                nullable: true
+                example: -100
+
+  # -------------------------------------------------------------------------
+  # Reusable responses
+  # -------------------------------------------------------------------------
+  responses:
+    BadRequest:
+      description: |
+        The request body or parameters failed validation.
+        `errorCode` will be `VALIDATION_ERROR`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            errorCode: VALIDATION_ERROR
+            message: "Request validation failed."
+            status: 400
+            timestamp: "2024-01-15T14:32:10Z"
+            path: "/v1/transfers"
+            details:
+              - field: amount
+                message: "must be greater than 0"
+                rejectedValue: 0
+
+    Unauthorized:
+      description: |
+        Missing or invalid API key.
+        `errorCode` will be `UNAUTHORIZED`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            errorCode: UNAUTHORIZED
+            message: "Invalid or missing API key."
+            status: 401
+            timestamp: "2024-01-15T14:32:10Z"
+            path: "/v1/transfers"
+
+    NotFound:
+      description: |
+        The requested resource does not exist.
+        `errorCode` will be one of `ACCOUNT_NOT_FOUND`, `TRANSFER_NOT_FOUND`,
+        `SAGA_NOT_FOUND`, or `REPORT_NOT_FOUND`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    Conflict:
+      description: |
+        Optimistic lock retry limit exhausted. The client may retry the
+        request using the same idempotency key.
+        `errorCode` will be `CONFLICT_RETRY_EXHAUSTED`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            errorCode: CONFLICT_RETRY_EXHAUSTED
+            message: "Optimistic lock retry limit exhausted. Please retry."
+            status: 409
+            timestamp: "2024-01-15T14:32:10Z"
+            path: "/v1/transfers"
+
+    UnprocessableEntity:
+      description: |
+        The request was well-formed but could not be processed due to a
+        business rule violation. `errorCode` will be one of:
+        `INSUFFICIENT_FUNDS`, `IDEMPOTENCY_KEY_REUSE`, `SAGA_COMPENSATED`,
+        `CURRENCY_MISMATCH`, or `SAME_ACCOUNT_TRANSFER`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    InternalServerError:
+      description: |
+        An unexpected error occurred. `errorCode` will be `INTERNAL_ERROR`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

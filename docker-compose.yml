@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ledger
+      POSTGRES_USER: ledger
+      POSTGRES_PASSWORD: ledger
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledger -d ledger"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    command:
+      # Correctness depends on these. fsync and synchronous_commit are ON (the
+      # defaults) and are stated explicitly so nobody "optimizes" them off: a
+      # ledger that acknowledges a transfer it has not durably written is a
+      # ledger that loses money on power failure.
+      - postgres
+      - -c
+      - fsync=on
+      - -c
+      - synchronous_commit=on
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/ledger
+      SPRING_DATASOURCE_USERNAME: ledger
+      SPRING_DATASOURCE_PASSWORD: ledger
+      CONCURRENCY_STRATEGY: pessimistic
+      ISOLATION_LEVEL: read_committed
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
