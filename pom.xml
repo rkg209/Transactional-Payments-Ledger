@@ -41,6 +41,13 @@
     <!-- Docker Engine API version Testcontainers negotiates with. See the
          failsafe plugin config below for why this must be set explicitly. -->
     <docker.api.version>1.44</docker.api.version>
+
+    <!-- Pinned to match the jOOQ version pulled in transitively by
+         spring-boot-starter-jooq (via the Spring Boot BOM), so the codegen
+         plugin and the runtime jOOQ classes are the same version. -->
+    <jooq.version>3.19.14</jooq.version>
+    <archunit.version>1.3.0</archunit.version>
+    <testcontainers-jooq-codegen.version>0.0.4</testcontainers-jooq-codegen.version>
   </properties>
 
   <dependencies>
@@ -112,6 +119,15 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Architectural fitness functions enforcing planning/03-system-design.md
+         §1.2 (module dependency matrix) at build time. -->
+    <dependency>
+      <groupId>com.tngtech.archunit</groupId>
+      <artifactId>archunit-junit5</artifactId>
+      <version>${archunit.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -196,6 +212,107 @@
             <api.version>${docker.api.version}</api.version>
           </systemPropertyVariables>
         </configuration>
+      </plugin>
+
+      <!--
+        jOOQ code generation via a real, ephemeral Postgres. See ADR 0002.
+
+        Starts postgres:16-alpine, applies the real Flyway migrations, introspects
+        the live catalog, generates type-safe sources into
+        target/generated-sources/jooq (package org.ledger.db.generated), tears the
+        container down. Generated code can never drift from the migrations because
+        it is regenerated from them, from scratch, every build. Not committed
+        (see .gitignore).
+
+        Runs in the Maven JVM at generate-sources, NOT in a surefire/failsafe fork,
+        so the Docker API pin must come from .mvn/jvm.config, not from this plugin's
+        own configuration. See that file and ADR 0002 for why.
+      -->
+      <plugin>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-jooq-codegen-maven-plugin</artifactId>
+        <version>${testcontainers-jooq-codegen.version}</version>
+        <dependencies>
+          <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${testcontainers.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <version>${flyway.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <version>${flyway.version}</version>
+          </dependency>
+          <!--
+            The plugin's own POM transitively drags in flyway-mysql:9.16.3 (for
+            its optional MySQL support, which this project does not use). That
+            9.x artifact is binary-incompatible with the flyway-core:10.x pinned
+            above: Flyway 10 removed the licensing classes 9.x's flyway-mysql
+            references, so codegen fails with
+            NoClassDefFoundError: FlywayTeamsUpgradeRequiredException. Pinning
+            flyway-mysql to the same 10.x line resolves the mismatch even though
+            it is never exercised (POSTGRES is the only configured database.type).
+          -->
+          <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+            <version>${flyway.version}</version>
+          </dependency>
+          <!--
+            Same class of problem: the plugin transitively drags in
+            jackson-annotations:2.10.3 (old), while flyway-core:10.x needs
+            jackson-databind/jackson-core:2.15.2. A 2.10.3/2.15.2 Jackson split
+            across annotations vs. databind/core is binary-incompatible
+            (NoClassDefFoundError: JsonKey, added in 2.12). Pin all three Jackson
+            artifacts to the same line to match jackson-databind's 2.15.2.
+          -->
+          <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>2.15.2</version>
+          </dependency>
+        </dependencies>
+        <executions>
+          <execution>
+            <id>generate-jooq-sources</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>generate</goal>
+            </goals>
+            <configuration>
+              <database>
+                <type>POSTGRES</type>
+                <containerImage>${postgres.image}</containerImage>
+              </database>
+              <!-- Empty: the plugin defaults locations to
+                   filesystem:${basedir}/src/main/resources/db/migration, which is
+                   exactly where V1/V2 already live. -->
+              <flyway/>
+              <jooq>
+                <generator>
+                  <database>
+                    <inputSchema>public</inputSchema>
+                    <excludes>flyway_schema_history</excludes>
+                  </database>
+                  <target>
+                    <packageName>org.ledger.db.generated</packageName>
+                    <directory>${project.build.directory}/generated-sources/jooq</directory>
+                  </target>
+                </generator>
+              </jooq>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

@@ -1,6 +1,6 @@
 # SPEC 0001 — Double-entry core
 
-Status: draft
+Status: verified
 Depends on: 0000
 Requirements: FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, NFR-2, NFR-3, NFR-14, NFR-18, CON-4, CON-5
 
@@ -46,15 +46,15 @@ not the primary guard.
 
 ## Acceptance criteria (the measurable "done")
 
-- [ ] A balanced transfer persists: 2 entries, summing to zero, and both balances move by exactly
+- [x] A balanced transfer persists: 2 entries, summing to zero, and both balances move by exactly
       `amount_minor` in opposite directions.
-- [ ] Money is conserved: the sum of both account balances is unchanged by any transfer.
-- [ ] `Σ(all ledger_entries) = 0` after every committed transfer.
-- [ ] An unbalanced posting is rejected and **nothing** is persisted (no orphan transfer row).
-- [ ] A transfer that would push the source below `min_balance` is rejected with
+- [x] Money is conserved: the sum of both account balances is unchanged by any transfer.
+- [x] `Σ(all ledger_entries) = 0` after every committed transfer.
+- [x] An unbalanced posting is rejected and **nothing** is persisted (no orphan transfer row).
+- [x] A transfer that would push the source below `min_balance` is rejected with
       `InsufficientFundsException`, and no entries are written.
-- [ ] `balance` (materialized) equals `Σ(entries)` for every account, asserted after every test.
-- [ ] ArchUnit: no code outside `LedgerEntryRepository` touches `ledger_entries`; no `UPDATE`/
+- [x] `balance` (materialized) equals `Σ(entries)` for every account, asserted after every test.
+- [x] ArchUnit: no code outside `LedgerEntryRepository` touches `ledger_entries`; no `UPDATE`/
       `DELETE` against it anywhere.
 
 ## Test plan

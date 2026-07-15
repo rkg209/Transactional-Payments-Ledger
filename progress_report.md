@@ -216,3 +216,106 @@ promise enforced only by application discipline is not enforced.
    write path.*
 
 ---
+
+## [004] SPEC 0001 — double-entry core, atomic transfers, zero-sum proven — 2026-07-15
+
+**Spec:** SPEC 0001
+
+**What:** The first real ledger logic. `TransferService.execute()` posts a balanced transfer —
+insert `transfers` (PENDING), insert exactly one DEBIT and one CREDIT `ledger_entries` row of equal
+`amount_minor`, move both account balances, mark `COMPLETED` — in one ACID transaction, with no
+locking (deliberately racy; SPEC 0004 fixes it). Concretely:
+
+- `docs/adr/0002-jooq-codegen.md` — Testcontainers-codegen mechanism, with an addendum documenting
+  a classpath-conflict fix discovered mid-implementation.
+- `pom.xml` — `testcontainers-jooq-codegen-maven-plugin` bound to `generate-sources`, ArchUnit
+  (`archunit-junit5`), `.mvn/jvm.config` pinning `-Dapi.version=1.44` for the Maven-JVM codegen run.
+- `org.ledger.db`: `AccountRepository`, `TransferRepository`, `LedgerEntryRepository` (jOOQ over
+  `org.ledger.db.generated`, regenerated from the live schema on every build, never committed).
+- `org.ledger.account`: `AccountService`, `AccountResult`, `AccountNotFoundException`.
+- `org.ledger.transfer`: `TransferService`, `TransferResult`, `TransferStatus`,
+  `InsufficientFundsException`.
+- `ArchitectureFitnessTest` — encodes planning/03-system-design.md §1.2's module matrix plus the
+  headline rule: only `LedgerEntryRepository` may reference the generated `LedgerEntries` types.
+- `AbstractPostgresIT` (singleton-container pattern) + five new `*IT` classes: `DoubleEntryCoreIT`,
+  `InsufficientFundsIT`, `UnbalancedPostingIT`, `LedgerImmutabilityIT` (migrated out of
+  `WalkingSkeletonIT`), `DoubleEntryPropertyIT` (200 seeded-random transfers over 8 accounts).
+
+**Why:** FR-1…FR-6, NFR-2/3/14/18, CON-4/5. This is the correctness bedrock every later spec rests
+on — if money can be created or destroyed here, nothing above (idempotency, locking, sagas) can
+save the system.
+
+**How:** The zero-sum invariant is enforced *by construction*, not by checking afterward:
+`LedgerEntryRepository.insertBalancedPair()` is the only write method it exposes, and it always
+writes the DEBIT and CREDIT together from one `amountMinor`, so no code path can post a single
+unbalanced entry. The insufficient-funds guard runs *before* any write, so rejection needs no
+rollback. `db` repositories never import `org.ledger.transfer.TransferStatus` (an enum in a
+higher-numbered module) — they write raw `"PENDING"`/`"DEBIT"` string literals matching the schema
+CHECK constraints, respecting the `db → db.generated only` dependency rule. Test fixtures fund
+accounts via `AbstractPostgresIT.seedInitialBalance()` — a raw-SQL balance write that intentionally
+produces no matching `ledger_entries`, documented as representing pre-existing capital (a legacy
+opening-balance import), not money this system created — and is explicitly excluded from the
+"balance == Σ(entries)" assertion for that reason; every balance produced *through*
+`TransferService` still satisfies it exactly.
+
+**Issues faced:**
+
+1. Docker Desktop was not running at all (no daemon socket) when codegen first ran; a stale
+   `~/.testcontainers.properties` from an unrelated project also pinned a socket path that no
+   longer existed.
+2. Once Docker was up, `testcontainers-jooq-codegen-maven-plugin`'s own POM transitively pulls
+   `flyway-mysql:9.16.3` and `jackson-annotations:2.10.3` — versions that don't match this
+   project's `flyway-core:10.10.0` (Spring Boot 3.3.5's BOM) and `jackson-databind:2.15.2`. The
+   plugin's self-first classloading strategy meant declaring newer `flyway-core` directly wasn't
+   enough; the stale transitive jars stayed on the classpath and were binary-incompatible with the
+   newer ones, producing `NoClassDefFoundError`s (`FlywayTeamsUpgradeRequiredException`, then
+   `JsonKey`) that read like missing dependencies, not version conflicts.
+3. `ArchitectureFitnessTest` failed two different ways on first run: (a) five rules for
+   not-yet-built modules (`idempotency`, `saga`, `reconciliation`, `concurrency`) failed with
+   "matched no classes" — ArchUnit's default is to treat an empty match as failure, not a vacuous
+   pass; (b) the ledger-entries boundary rule fired 62 violations, all from jOOQ's own generated
+   `Tables`/`Keys`/`Public`/`DefaultCatalog` classes cross-referencing `LedgerEntries` as internal
+   schema wiring — not application code.
+4. `block-float-money.sh`'s invariant-#2 half (no UPDATE/DELETE on `ledger_entries`) has no
+   test-file exemption, unlike its invariant-#1 half's doc/spec exemption — so it blocked
+   `LedgerImmutabilityIT`, which must contain literal `UPDATE ledger_entries` / `DELETE FROM
+   ledger_entries` text to assert the trigger rejects them. This is the exact test `WalkingSkeletonIT`
+   (SPEC 0000) already contained before this session moved it out.
+5. `InsufficientFundsIT`'s min-balance-breach test tried to create an account with
+   `minBalance=100` directly — but `accounts.balance` defaults to 0 at INSERT, so the row violated
+   `accounts_balance_gte_min` (`0 < 100`) before any transfer logic ran at all.
+
+**Resolution:**
+
+1. Removed the stale `~/.testcontainers.properties`, launched Docker Desktop (`open -a Docker`),
+   confirmed the socket at `~/.docker/run/docker.sock` was live before retrying.
+2. Pinned `flyway-mysql` and `jackson-annotations` to the same versions as the rest of the
+   toolchain directly in the plugin's `<dependencies>` block, even though `flyway-mysql` is never
+   exercised (`database.type=POSTGRES` only) — a maintenance tax documented in ADR 0002's addendum
+   so the next version bump doesn't have to re-diagnose it from scratch.
+3. (a) Added `src/test/resources/archunit.properties` with `archRule.failOnEmptyShould=false`,
+   matching the plan's explicit intent that non-existent-module rules pass vacuously until those
+   specs add classes. (b) Narrowed the `that()` predicate to exclude
+   `org.ledger.db.generated..` itself from the "who may reference LedgerEntries" check, since
+   jOOQ's own generated plumbing legitimately cross-references every table.
+4. Asked the user how to resolve the hook gap rather than working around it (e.g. string-splitting
+   the SQL to dodge the regex, which would have defeated the guardrail's intent). User chose to fix
+   the hook: added a narrow `src/test/**` exemption to *only* the invariant-#2 check (invariant #1,
+   no-float-money, still applies to tests — a float bug in test code is still a float bug). An
+   AI-auto-mode permission classifier caught and rejected my first attempt at this fix because it
+   placed the exemption's `case` block before invariant #1's check, which would have silently
+   disabled float-money detection for all test files too — a good catch; the corrected version
+   scopes the exemption to only the invariant-#2 `if` condition.
+5. Added `AbstractPostgresIT.seedAccountState(id, balance, minBalance)`, which sets both columns in
+   one UPDATE after the account already exists, so the CHECK only needs to hold in the final state
+   — `AccountService.createAccount` still cannot set an initial balance, by design, so
+   min-balance-breach tests must be fixture-seeded, not created pre-breached.
+
+Full build verified clean: `mvn clean verify` — 20/20 tests green (9 ArchUnit + 11 integration, all
+against real Postgres via Testcontainers) — and `mvn spotless:check` clean. `/invariant-check` run
+both against the Testcontainers test suite (`DoubleEntryPropertyIT`: both invariants asserted after
+every one of 200 random transfers) and directly via SQL against a `docker compose`-launched
+Postgres seeded with a production-equivalent transfer: `global_sum = 0`, and per-account
+`balance == Σ(entries)` held exactly for every account with no fixture seed. Zero drift.
+
+---

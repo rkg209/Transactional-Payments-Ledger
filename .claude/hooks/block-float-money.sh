@@ -82,8 +82,20 @@ fi
 #
 # A database trigger enforces this at runtime too. This hook catches it earlier,
 # at authoring time, with a better explanation than a Postgres exception.
+#
+# Exempts src/test/**, and ONLY this check (invariant #1 above still applies to
+# tests -- a float bug in test code is still a float bug): a test asserting the
+# trigger rejects UPDATE/DELETE (e.g. LedgerImmutabilityIT) must contain that
+# exact literal text to exercise it. That is the invariant being *proven*, not
+# violated -- the same reasoning that already exempts docs/specs from
+# discussing these keywords in prose.
 # ---------------------------------------------------------------------------
-if printf '%s' "$new_text" \
+is_test_file=0
+case "$file_path" in
+    */src/test/*) is_test_file=1 ;;
+esac
+
+if [ "$is_test_file" -eq 0 ] && printf '%s' "$new_text" \
     | grep -inE '(UPDATE[[:space:]]+ledger_entries|DELETE[[:space:]]+FROM[[:space:]]+ledger_entries|\.update\(LEDGER_ENTRIES|\.delete(From)?\(LEDGER_ENTRIES|deleteFrom\(LEDGER_ENTRIES)' >/dev/null 2>&1; then
     cat >&2 <<EOF
 BLOCKED by block-float-money hook -- invariant #2 violated.
