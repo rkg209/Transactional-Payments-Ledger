@@ -481,3 +481,91 @@ showing a nonzero `balance - Σ(entries)` delta all carry an out-of-band seeded 
 manual session (the same documented, non-drift carve-out as SPEC 0001/0002), not real drift.
 
 ---
+
+## [007] SPEC 0004 — Concurrency control: optimistic and pessimistic locking — 2026-07-21
+**Spec:** SPEC 0004
+**What:** New `org.ledger.concurrency` package (`ConcurrencyStrategy`, `LockedAccounts`,
+`OptimisticStrategy`, `PessimisticStrategy`, `ConcurrencyConflictException`); two new
+`AccountRepository` methods (`findOrdered`/`findOrderedForUpdate`, both a single
+`WHERE id IN (?,?) ORDER BY id [FOR UPDATE]` statement) plus `applyDeltaIfVersion`; a rewritten
+`TransferService.execute()` — a plain bounded retry loop (`ledger.concurrency.max-attempts`,
+default 5, backoff `ledger.concurrency.backoff-base-ms * 2^(attempt-1)` capped at 800ms) around one
+`TransactionTemplate` transaction per attempt; new `infrastructure/ConcurrencyConfig` (composition
+root: picks the strategy bean and the transaction isolation level from config, both fail-fast on an
+unrecognized value) and `LedgerConcurrencyProperties`; `docs/adr/0006-optimistic-vs-pessimistic.md`;
+nine new tests under `src/test/java/org/ledger/concurrency/`.
+**Why:** FR-19..23 / NFR-3 / NFR-14 — SPEC 0001 shipped a knowingly racy read-then-write
+(`TransferService.java`, `AccountRepository.applyDelta`), documented in both files' Javadoc as
+"SPEC 0004 replaces this." This closes it with both candidate locking disciplines behind one seam,
+so SPEC 0008 picks a production default from a benchmark, not a guess.
+**How:** Per ADR 0006: no AOP (the project has no `spring-boot-starter-aop`, and
+`@Transactional(isolation=...)` cannot be runtime-configured anyway) — a plain retry loop around
+`TransactionTemplate` gets retry-outside-the-transaction and per-transaction isolation from one
+construct, visible at the call site. Both strategies' `lockAndLoad` issue one statement locking (or
+reading) both rows in ascending id order — structural, not a caller convention. The retry loop
+catches `ConcurrencyConflictException` and any exception whose unwrapped `SQLState` is `40001`
+(serialization failure) or `40P01` (deadlock detected), so `ledger.isolation-level=serializable`
+retries instead of 500ing. Tests: an abstract base + `Optimistic.../Pessimistic...` subclass per
+scenario (`ConcurrencyHammerIT` — 32 threads × 25 transfers into one hot account;
+`DeadlockIT` — bidirectional A→B/B→A under a hard timeout; `NegativeBalanceIT` — 20 concurrent
+withdrawals against exactly-enough-for-one balance), a `SerializableConcurrencyHammerIT` variant,
+plus a Mockito-based `TransferServiceRetryUnitTest` and a deterministic `OptimisticConflictIT` for
+the retry/CAS mechanism itself (see Issues faced — racing real transaction timing for these two
+turned out not to be reproducible on demand).
+**Issues faced:**
+1. **A real Postgres deadlock, not just a CAS conflict, in the optimistic strategy.**
+   `OptimisticDeadlockIT` failed with `ERROR: deadlock detected` — from Postgres itself, which
+   should be impossible for a strategy that never takes an explicit lock. Root cause:
+   `TransferService.executeOnce` applied deltas in request order (`fromAccountId` then
+   `toAccountId`), and a plain `UPDATE` always takes an implicit row lock regardless of isolation
+   level or the `WHERE version = ?` predicate. Two opposite-direction transfers (A→B and B→A) each
+   locked their own "from" row first and then blocked waiting for the other's row — the exact
+   deadlock the plan's lock-ordering discipline was supposed to prevent, except that discipline was
+   only implemented in `lockAndLoad`'s read, not in the write order that actually takes the lock for
+   the lock-free optimistic path.
+2. **`OptimisticConflictIT`'s own competing write silently rolled back.** The test called
+   `accountRepository.applyDeltaIfVersion(...)` directly to simulate a competing commit; it reported
+   1 row affected, but a subsequent read still showed the pre-update balance. This is the exact bug
+   already documented in entry [006]: `spring.datasource.hikari.auto-commit=false` project-wide
+   means any write issued without an explicit surrounding transaction appears to succeed on its own
+   connection and is silently discarded when that connection returns to the pool.
+3. **Default `ledger.concurrency.max-attempts=5` was not enough for the test's own contention
+   level.** `OptimisticConcurrencyHammerIT` (32 threads, one hot account), `OptimisticDeadlockIT`
+   (once fixed per #1, still 32 threads racing two accounts), and `SerializableConcurrencyHammerIT`
+   all exhausted the production-default retry budget under real, maximally-adversarial contention.
+4. **"FATAL: sorry, too many clients already."** Nine new `@TestPropertySource` combinations means
+   nine more distinct Spring contexts, each with its own up-to-20-connection Hikari pool, several
+   alive at once under the Spring test context cache — pushing total connections past Postgres's
+   default `max_connections=100`.
+**Resolution:**
+1. Changed `executeOnce` to apply both deltas in ascending-id order (matching `lockAndLoad`'s read
+   order) regardless of which account is `from` and which is `to` — whichever id sorts first gets
+   its `UPDATE` issued first in every transfer, so two opposing transfers can never each hold one
+   row while waiting on the other.
+2. Wrapped every direct repository/strategy call in the test with `tx.execute(...)` /
+   `tx.executeWithoutResult(...)`, matching how these methods are actually invoked in production
+   (inside `TransferService`'s `TransactionTemplate`).
+3. Raised `ledger.concurrency.max-attempts` (and lowered `backoff-base-ms`) via
+   `@TestPropertySource` on the specific hammer/deadlock test classes that hammer a hot account with
+   32 real concurrent threads, rather than loosening the production default — the production value
+   is SPEC 0008's job to tune against a real benchmark, and 5 stays the documented, deliberate
+   starting point for that comparison.
+4. Raised the shared Testcontainers Postgres's `max_connections` to 300 via
+   `.withCommand("postgres", "-c", "max_connections=300")` in `AbstractPostgresIT` — fixes the root
+   cause (more Spring contexts than the default anticipates) once, rather than shrinking every new
+   test class's Hikari pool individually.
+
+Full suite green: `mvn -B verify` — 167/167 tests (16 via Surefire: 9 ArchUnit + 2
+`TransferServiceRetryUnitTest` + 5 `GlobalExceptionHandlerUnitTest`; 151 via Failsafe across every
+`*IT` class, including all four new scenarios under both strategies plus the `SERIALIZABLE`
+variant) — and `mvn spotless:check` clean. Manually verified against `docker compose up -d
+postgres`: `CONCURRENCY_STRATEGY=optimistic`
+and `=pessimistic` both start and log their active strategy at `INFO`;
+`CONCURRENCY_STRATEGY=bogus` fails startup with `Unrecognized ledger.concurrency-strategy 'bogus'`
+rather than silently defaulting. 20 concurrent HTTP transfers against a hot account under the
+running `optimistic` instance, checked directly via `psql`: `global_sum = 0`, and the unseeded
+destination account's `balance` matched its entry sum exactly; the only accounts with a nonzero
+delta were ones with an out-of-band seeded starting balance (the same documented, non-drift
+carve-out as prior entries).
+
+---

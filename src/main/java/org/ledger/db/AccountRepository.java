@@ -52,9 +52,9 @@ public class AccountRepository {
   }
 
   /**
-   * Plain read-then-write balance update. Knowingly racy: no {@code FOR UPDATE}, no version
-   * compare-and-set. SPEC 0004 replaces this with an explicit {@code ConcurrencyStrategy}; do not
-   * pre-build locking here.
+   * Unconditional balance update. Callable only while the row is locked by {@code
+   * PessimisticStrategy}'s {@code SELECT ... FOR UPDATE} — the held row lock is what makes this
+   * safe, not anything in this method.
    */
   public void applyDelta(UUID accountId, long delta) {
     dsl.update(ACCOUNTS)
@@ -62,6 +62,41 @@ public class AccountRepository {
         .set(ACCOUNTS.VERSION, ACCOUNTS.VERSION.add(1))
         .set(ACCOUNTS.UPDATED_AT, DSL.currentOffsetDateTime())
         .where(ACCOUNTS.ID.eq(accountId))
+        .execute();
+  }
+
+  /**
+   * Plain read, both rows in one statement, ascending id order. Used by the optimistic strategy: no
+   * lock is taken here, {@link #applyDeltaIfVersion} is where the race is actually decided.
+   */
+  public List<AccountsRecord> findOrdered(UUID a, UUID b) {
+    return dsl.selectFrom(ACCOUNTS).where(ACCOUNTS.ID.in(a, b)).orderBy(ACCOUNTS.ID.asc()).fetch();
+  }
+
+  /**
+   * Same read, {@code FOR UPDATE}. A single statement locking both rows in ascending id order — not
+   * two sequential selects — is what makes the lock-ordering discipline structural rather than a
+   * convention the caller could get wrong (ADR 0001).
+   */
+  public List<AccountsRecord> findOrderedForUpdate(UUID a, UUID b) {
+    return dsl.selectFrom(ACCOUNTS)
+        .where(ACCOUNTS.ID.in(a, b))
+        .orderBy(ACCOUNTS.ID.asc())
+        .forUpdate()
+        .fetch();
+  }
+
+  /**
+   * Version compare-and-set: {@code UPDATE ... WHERE id = ? AND version = ?}. Returns the number of
+   * rows updated — 0 means a concurrent writer committed first and the caller must retry.
+   */
+  public int applyDeltaIfVersion(UUID accountId, long delta, long expectedVersion) {
+    return dsl.update(ACCOUNTS)
+        .set(ACCOUNTS.BALANCE, ACCOUNTS.BALANCE.add(delta))
+        .set(ACCOUNTS.VERSION, ACCOUNTS.VERSION.add(1))
+        .set(ACCOUNTS.UPDATED_AT, DSL.currentOffsetDateTime())
+        .where(ACCOUNTS.ID.eq(accountId))
+        .and(ACCOUNTS.VERSION.eq(expectedVersion))
         .execute();
   }
 }

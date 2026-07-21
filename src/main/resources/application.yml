@@ -34,6 +34,11 @@ ledger:
   # (SPEC 0004 / 0008); neither is a default we settled for.
   concurrency-strategy: ${CONCURRENCY_STRATEGY:pessimistic}
   isolation-level: ${ISOLATION_LEVEL:read_committed}
+  concurrency:
+    # Bounded retry loop around the transfer transaction (SPEC 0004 / ADR 0006). Backoff is
+    # 50ms * 2^(attempt-1), capped at 800ms; exhaustion maps to 409 CONFLICT_RETRY_EXHAUSTED.
+    max-attempts: ${CONCURRENCY_MAX_ATTEMPTS:5}
+    backoff-base-ms: ${CONCURRENCY_BACKOFF_BASE_MS:50}
   reconciliation:
     interval-ms: ${RECONCILIATION_INTERVAL_MS:60000}
   # Comma-separated set of valid API keys (ADR 0003). API_KEYS wins if set; API_KEY

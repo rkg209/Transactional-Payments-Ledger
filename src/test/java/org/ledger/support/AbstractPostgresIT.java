@@ -22,11 +22,19 @@ import org.testcontainers.containers.PostgreSQLContainer;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 public abstract class AbstractPostgresIT {
 
+  /**
+   * {@code max_connections} raised well past Postgres's default 100: each distinct
+   * {@code @TestPropertySource} combination (SPEC 0004's per-strategy concurrency ITs, among
+   * others) gets its own Spring context and its own up-to-20-connection Hikari pool, and several
+   * stay open simultaneously under the Spring test context cache. The default limit was hit in
+   * practice, as "FATAL: sorry, too many clients already" rather than a slow, mysterious flake.
+   */
   protected static final PostgreSQLContainer<?> POSTGRES =
       new PostgreSQLContainer<>("postgres:16-alpine")
           .withDatabaseName("ledger")
           .withUsername("ledger")
-          .withPassword("ledger");
+          .withPassword("ledger")
+          .withCommand("postgres", "-c", "max_connections=300");
 
   static {
     POSTGRES.start();

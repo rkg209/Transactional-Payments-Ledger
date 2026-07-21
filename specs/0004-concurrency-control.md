@@ -1,6 +1,6 @@
 # SPEC 0004 — Concurrency control (BOTH strategies)
 
-Status: draft
+Status: implemented
 Depends on: 0003
 Requirements: FR-19, FR-20, FR-21, FR-22, FR-23, NFR-3, NFR-14
 
@@ -21,7 +21,9 @@ SPEC 0001 knowingly shipped a racy read-then-write; this spec fixes it — and d
 - Explicit isolation level, set per-transaction, never inherited from the pool default.
   `ISOLATION_LEVEL=read_committed|serializable`.
 - Overdraft rule correctly enforced under contention by **both** strategies.
-- ADR `0002-optimistic-vs-pessimistic.md`.
+- ADR `0002-optimistic-vs-pessimistic.md`. **Corrective note:** ADRs are append-only and 0002 was
+  already taken by `jooq-codegen`; the actual ADR for this decision is
+  `docs/adr/0006-optimistic-vs-pessimistic.md`.
 
 ## Out of scope
 
@@ -47,15 +49,16 @@ retry sits outside the `@Transactional` boundary, not inside it.
 
 ## Acceptance criteria (the measurable "done")
 
-- [ ] Both strategies pass the concurrency hammer: N concurrent transfers against a single hot
+- [x] Both strategies pass the concurrency hammer: N concurrent transfers against a single hot
       account → **no lost updates**, final balance exactly correct.
-- [ ] Neither strategy ever produces an illegal negative balance under contention.
-- [ ] Σ(entries) = 0 after every run, under both strategies.
-- [ ] Concurrent A→B and B→A transfers do not deadlock (lock ordering works).
-- [ ] Optimistic retry exhaustion returns 409, and applies **nothing**.
-- [ ] A rolled-back optimistic attempt leaves zero ledger entries behind.
-- [ ] The strategy toggle switches behavior with no other code change.
-- [ ] ADR 0002 records the decision and the anomalies each level prevents.
+- [x] Neither strategy ever produces an illegal negative balance under contention.
+- [x] Σ(entries) = 0 after every run, under both strategies.
+- [x] Concurrent A→B and B→A transfers do not deadlock (lock ordering works).
+- [x] Optimistic retry exhaustion returns 409, and applies **nothing**.
+- [x] A rolled-back optimistic attempt leaves zero ledger entries behind.
+- [x] The strategy toggle switches behavior with no other code change.
+- [x] ADR 0006 (renumbered from 0002 — see corrective note above) records the decision and the
+      anomalies each level prevents.
 
 ## Test plan
 
