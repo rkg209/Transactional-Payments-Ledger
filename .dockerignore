@@ -1,0 +1,8 @@
+target/generated-sources
+target/classes
+target/test-classes
+target/*-reports
+target/maven-*
+.git
+.idea
+*.md

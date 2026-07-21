@@ -569,3 +569,78 @@ delta were ones with an out-of-band seeded starting balance (the same documented
 carve-out as prior entries).
 
 ---
+
+## [008] Phase 4 checkpoint — strong manual/E2E verification pass — 2026-07-21
+**Spec:** Fix
+**What:** Full verification sweep of everything implemented through SPEC 0004 before moving on to
+SPEC 0005. Ran `mvn -B verify` (151 Failsafe integration tests + 16 Surefire tests, including 9
+ArchUnit boundary checks — all green) and `mvn spotless:check` (clean). Then exercised the real
+running stack end to end: auth (missing/invalid key), account creation, transfers, the full
+idempotency lifecycle (first request, byte-identical replay with `X-Idempotent-Replayed: true`,
+same-key-different-body rejection, missing-key rejection), every documented error path
+(`INSUFFICIENT_FUNDS`, `SAME_ACCOUNT_TRANSFER`, `CURRENCY_MISMATCH`, `INVALID_AMOUNT`,
+`ACCOUNT_NOT_FOUND`, `MALFORMED_REQUEST`, `VALIDATION_ERROR`), cursor pagination, public
+OpenAPI/Swagger routes, the `ledger_entries` append-only trigger (`UPDATE`/`DELETE` both correctly
+rejected), the global and per-account zero-sum invariant via direct SQL, and a 300-request /
+100-unique-key concurrent duplicate-key smoke test against one hot account (100 real `201`s, 200
+correctly-replayed `200`s, 0 double-charges, `global_sum` stayed exactly 0 throughout). Fixed two
+real bugs found along the way (`Dockerfile`, `Makefile`, `.dockerignore` (new), `demo.sh`). Added
+`MANUAL_TESTING.md` at the repo root — a step-by-step guide covering every implemented feature,
+gitignored (local-only, not part of the committed SDD trail) — for the user's own manual sign-off
+gate before SPEC 0005 starts.
+**Why:** User asked for a strong testing pass across everything built so far (phase 4 = specs
+0000–0004), with any bugs found fixed immediately, plus a durable manual-testing reference so they
+can independently verify and approve before the next phase begins.
+**How:** Treated the automated suite as necessary but not sufficient — it was already 151/151
+green — and instead tried to actually *use* the service the way an operator would: build the real
+Docker image, start the real stack, hit it with `curl`, read real Postgres state directly. That is
+what surfaced both real bugs below; neither would show up in `mvn verify`, because Testcontainers
+tests never build the Docker image or exercise `docker compose` at all.
+**Issues faced:**
+1. **`make up` / `docker compose up --build` failed outright — a genuine blocker for anyone trying
+   to run the project as documented.** The `Dockerfile`'s build stage ran `mvn -B -q clean package
+   -DskipTests` inside the image build. `mvn package` triggers jOOQ code generation
+   (`generate-sources` phase, `testcontainers-jooq-codegen-maven-plugin`, see ADR 0002), which spins
+   up a real Postgres container via Testcontainers to introspect the schema — and that requires a
+   Docker daemon, which a plain `docker build` build stage has no access to (no
+   Docker-in-Docker/socket mount configured anywhere). Every build failed at
+   `generate-jooq-sources` with `Could not find a valid Docker environment.` This had evidently
+   never been exercised end to end before — `mvn verify` (used everywhere else, including CI) runs
+   on the host, which *does* have a Docker daemon, so the same codegen step always worked there.
+2. **`demo.sh`'s idempotency section actively lied about current behavior.** It printed "SPEC 0002
+   requires the Idempotency-Key header but does not yet enforce it ... Today this DOUBLE-APPLIES
+   the transfer" — accurate when written (before SPEC 0003), false now, and it never asserted
+   anything: it just printed the claim and moved on, so nobody running the script would notice it
+   was wrong. Running it confirmed the replay was in fact correctly a no-op (balance unchanged,
+   `X-Idempotent-Replayed: true`) — the code was right, only the script's narrative was stale.
+3. Several of my own manual `curl` attempts were simply wrong and briefly looked like bugs: sending
+   `X-API-Key` instead of `Authorization: ApiKey <key>` (per ADR 0003), hitting `/accounts` instead
+   of `/api/v1/accounts`, sending `amountMinor` instead of the DTO's actual `amount` field, and
+   first checking the zero-sum invariant with a naive `SUM(amount_minor)` — which is meaningless
+   because the schema stores `amount_minor` as an unsigned magnitude and encodes the sign in
+   `direction` (by design, see `04-database-schema.sql`), so every real transfer summed to `2 ×
+   amount` instead of `0` until the query accounted for `direction`.
+**Resolution:**
+1. Rewrote `Dockerfile` to a single runtime-only stage (`eclipse-temurin:21-jre-alpine`) that
+   copies a prebuilt `target/payments-ledger-*.jar` rather than compiling anything itself. Added a
+   `make jar` target (`mvn -B -q clean package -DskipTests`, run on the host where Testcontainers
+   can already reach Docker normally) and made `make up` depend on it. Added a `.dockerignore` so
+   the build context sent to the daemon doesn't include `target/generated-sources`, `target/classes`,
+   `.git`, etc. Verified: `make up` now builds and starts cleanly, `docker compose ps` shows both
+   containers healthy, `/health` returns `{"status":"UP","database":"UP"}`.
+2. Rewrote the replay section of `demo.sh` to actually assert: it captures the response headers
+   from the replay request and fails with a non-zero exit if `X-Idempotent-Replayed: true` is
+   missing, and compares balances before/after the replay, failing loudly on any mismatch instead
+   of narrating an outcome nobody checked. Re-ran `./demo.sh` against a freshly truncated database —
+   completes with no `MISMATCH` and the correct assertions holding.
+3. Corrected the test commands (right header, right path, right field name, direction-aware SQL).
+   Once corrected, every endpoint, every documented error code, pagination, the immutability
+   trigger, and the zero-sum invariant (global and per-account, both via raw SQL and via a live
+   300-request concurrent-duplicate load) behaved exactly per spec — nothing else needed fixing.
+
+Full suite still green after the fixes (`mvn -B verify`, `mvn spotless:check`). Manual verification
+against the rebuilt `docker compose` stack: 100 unique transfers + 200 correctly-replayed
+duplicates out of 300 concurrent requests over 100 shared idempotency keys, `global_sum = 0`
+throughout, `SELECT count(*) FROM transfers WHERE idempotency_key LIKE 'hammer-%'` = exactly 100.
+
+---

@@ -83,24 +83,36 @@ curl -sf "${BASE_URL}/api/v1/transfers/${TRANSFER_ID}" -H "${AUTH_HEADER}"; echo
 
 echo
 echo "=================================================================="
-echo "  Idempotency (SPEC 0003 territory) -- submitting the SAME request"
-echo "  with the SAME Idempotency-Key a second time."
+echo "  Idempotency (SPEC 0003) -- submitting the SAME request with the"
+echo "  SAME Idempotency-Key a second time."
 echo "=================================================================="
-echo "  SPEC 0002 requires the Idempotency-Key header but does not yet"
-echo "  enforce it -- that lands in SPEC 0003. Today this DOUBLE-APPLIES"
-echo "  the transfer; this is the known, honest gap this demo documents"
-echo "  rather than hides."
+echo "  SPEC 0003 is implemented: the retry must replay the original 201"
+echo "  response as a 200 with X-Idempotent-Replayed: true, and balances"
+echo "  must NOT move a second time."
 echo
-REPLAY=$(curl -sf -X POST "${BASE_URL}/api/v1/transfers" \
+REPLAY_HEADERS=$(mktemp)
+REPLAY=$(curl -sf -D "$REPLAY_HEADERS" -X POST "${BASE_URL}/api/v1/transfers" \
   -H "${AUTH_HEADER}" -H "${JSON_HEADER}" \
   -H "Idempotency-Key: ${TRANSFER_KEY}" \
   -d "{\"fromAccountId\":\"${ALICE_ID}\",\"toAccountId\":\"${BOB_ID}\",\"amount\":2500,\"currency\":\"USD\"}")
 echo "$REPLAY"
+if ! grep -qi '^X-Idempotent-Replayed: *true' "$REPLAY_HEADERS"; then
+  echo "    MISMATCH -- expected X-Idempotent-Replayed: true on the replay." >&2
+  rm -f "$REPLAY_HEADERS"
+  exit 1
+fi
+rm -f "$REPLAY_HEADERS"
 ALICE_BAL_2=$(curl -sf "${BASE_URL}/api/v1/accounts/${ALICE_ID}/balance" -H "${AUTH_HEADER}")
 BOB_BAL_2=$(curl -sf "${BASE_URL}/api/v1/accounts/${BOB_ID}/balance" -H "${AUTH_HEADER}")
 echo "    alice after replay: ${ALICE_BAL_2}"
 echo "    bob after replay:   ${BOB_BAL_2}"
-echo "    (the second transfer was applied again -- SPEC 0003 makes this a no-op)"
+ALICE_AMT_2=$(echo "$ALICE_BAL_2" | grep -o '"balance":[0-9-]*' | cut -d':' -f2)
+BOB_AMT_2=$(echo "$BOB_BAL_2" | grep -o '"balance":[0-9-]*' | cut -d':' -f2)
+if [ "$ALICE_AMT_2" -ne "$ALICE_AMT" ] || [ "$BOB_AMT_2" -ne "$BOB_AMT" ]; then
+  echo "    MISMATCH -- balances moved on replay; the transfer was double-applied." >&2
+  exit 1
+fi
+echo "    balances unchanged -- the replay was a true no-op, as SPEC 0003 requires."
 
 echo
 echo "==> demo.sh complete."

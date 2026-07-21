@@ -48,3 +48,6 @@ planning/
 specs/
 progress_report.md
 transactional-payments-ledger-spec.md
+
+# Local-only manual test guide (not part of the SDD trail)
+MANUAL_TESTING.md

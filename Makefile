@@ -42,7 +42,10 @@ format: ## Apply Spotless formatting
 check: ## Verify formatting without changing files
 	mvn -B spotless:check
 
-up: ## Start the stack (app + Postgres)
+jar: ## Build the runnable jar on the host (needs Docker for jOOQ codegen)
+	mvn -B -q clean package -DskipTests
+
+up: jar ## Build the jar, then start the stack (app + Postgres)
 	docker compose up -d --build
 
 down: ## Stop the stack

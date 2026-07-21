@@ -1,23 +1,14 @@
 # ---------------------------------------------------------------------------
-# Stage 1 — build
-# ---------------------------------------------------------------------------
-FROM eclipse-temurin:21-jdk-alpine AS build
-
-WORKDIR /build
-
-RUN apk add --no-cache maven
-
-# Dependencies first, so a source-only change does not re-download the world.
-COPY pom.xml .
-RUN mvn -B -q dependency:go-offline
-
-COPY src ./src
-RUN mvn -B -q clean package -DskipTests
-
-# ---------------------------------------------------------------------------
-# Stage 2 — runtime
+# Runtime image only. The jar is built on the host beforehand (`make jar` /
+# `mvn -B clean package -DskipTests`), NOT inside this build.
 #
-# JRE, not JDK. Non-root. Nothing from the build stage but the jar.
+# Why: jOOQ code generation (generate-sources phase, see pom.xml and ADR 0002)
+# spins up a real Postgres via Testcontainers, which needs a Docker daemon.
+# A `docker build` build stage has no access to the host's Docker socket
+# (no Docker-in-Docker here), so running `mvn package` inside the image build
+# fails with "Could not find a valid Docker environment." Building the jar on
+# the host — where Testcontainers can already reach Docker — and copying the
+# finished artifact in sidesteps that entirely.
 # ---------------------------------------------------------------------------
 FROM eclipse-temurin:21-jre-alpine AS runtime
 
@@ -25,7 +16,7 @@ RUN addgroup -S ledger && adduser -S ledger -G ledger
 
 WORKDIR /app
 
-COPY --from=build /build/target/payments-ledger-*.jar /app/ledger.jar
+COPY target/payments-ledger-*.jar /app/ledger.jar
 
 RUN chown -R ledger:ledger /app
 USER ledger
