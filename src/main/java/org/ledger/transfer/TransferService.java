@@ -1,6 +1,5 @@
 package org.ledger.transfer;
 
-import java.util.Optional;
 import java.util.UUID;
 import org.ledger.account.AccountNotFoundException;
 import org.ledger.db.AccountRepository;
@@ -21,6 +20,11 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class TransferService {
 
+  /**
+   * §3.2 INVALID_AMOUNT's upper bound. A documented ceiling, not an arbitrary long overflow guard.
+   */
+  public static final long MAX_TRANSFER_AMOUNT_MINOR = 999_999_999_999L;
+
   private final AccountRepository accountRepository;
   private final TransferRepository transferRepository;
   private final LedgerEntryRepository ledgerEntryRepository;
@@ -37,6 +41,13 @@ public class TransferService {
   @Transactional
   public TransferResult execute(
       UUID fromAccountId, UUID toAccountId, long amountMinor, String currency) {
+    if (fromAccountId.equals(toAccountId)) {
+      throw new SameAccountException();
+    }
+    if (amountMinor <= 0 || amountMinor > MAX_TRANSFER_AMOUNT_MINOR) {
+      throw new InvalidAmountException(amountMinor);
+    }
+
     AccountsRecord from =
         accountRepository
             .findById(fromAccountId)
@@ -45,6 +56,12 @@ public class TransferService {
         accountRepository
             .findById(toAccountId)
             .orElseThrow(() -> new AccountNotFoundException(toAccountId));
+
+    if (!from.getCurrency().equals(to.getCurrency())
+        || !from.getCurrency().equals(currency)
+        || !to.getCurrency().equals(currency)) {
+      throw new CurrencyMismatchException(from.getCurrency(), to.getCurrency());
+    }
 
     // Balance guard BEFORE any write: rejection needs no rollback of already-written entries.
     // The DB CHECK(balance >= min_balance) is the backstop, not the primary guard.
@@ -61,13 +78,26 @@ public class TransferService {
     accountRepository.applyDelta(toAccountId, amountMinor);
     transferRepository.markCompleted(transfer.getId());
 
-    return new TransferResult(transfer.getId(), TransferStatus.COMPLETED);
+    return getTransfer(transfer.getId());
   }
 
   @Transactional(readOnly = true)
-  public Optional<TransferResult> getTransfer(UUID transferId) {
+  public TransferResult getTransfer(UUID transferId) {
     return transferRepository
         .findById(transferId)
-        .map(t -> new TransferResult(t.getId(), TransferStatus.valueOf(t.getStatus())));
+        .map(TransferService::toResult)
+        .orElseThrow(() -> new TransferNotFoundException(transferId));
+  }
+
+  private static TransferResult toResult(TransfersRecord record) {
+    return new TransferResult(
+        record.getId(),
+        record.getFromAccountId(),
+        record.getToAccountId(),
+        record.getAmountMinor(),
+        record.getCurrency(),
+        TransferStatus.valueOf(record.getStatus()),
+        record.getCreatedAt(),
+        record.getUpdatedAt());
   }
 }

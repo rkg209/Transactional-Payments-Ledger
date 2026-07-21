@@ -1,6 +1,6 @@
 # SPEC 0002 — Transfer API
 
-Status: draft
+Status: implemented
 Depends on: 0001
 Requirements: FR-7, FR-8, FR-9, FR-12, FR-13, NFR-22, DR-8
 
@@ -44,18 +44,24 @@ API keys are compared with `MessageDigest.isEqual` (timing-safe) and are never l
 
 ## Acceptance criteria (the measurable "done")
 
-- [ ] `curl` a transfer end to end: balances move, and the total across both accounts is unchanged.
-- [ ] `GET /accounts/{id}/balance` reflects the transfer immediately after it returns 201.
-- [ ] `GET /transfers/{id}` returns the transfer with its status.
-- [ ] Every error in the §3.2 catalogue is reachable and returns its documented status + `errorCode`.
-- [ ] Unauthenticated request to any `/api/v1/*` endpoint → 401.
-- [ ] The OpenAPI document renders and matches the implemented surface.
-- [ ] `demo.sh` runs green against `docker compose up`.
+- [x] `curl` a transfer end to end: balances move, and the total across both accounts is unchanged.
+- [x] `GET /accounts/{id}/balance` reflects the transfer immediately after it returns 201.
+- [x] `GET /transfers/{id}` returns the transfer with its status.
+- [x] Every error in the §3.2 catalogue is reachable and returns its documented status + `errorCode`.
+- [x] Unauthenticated request to any `/api/v1/*` endpoint → 401.
+- [x] The OpenAPI document renders and matches the implemented surface.
+- [x] `demo.sh` runs green (verified against `docker compose up postgres` + the app run locally --
+      `docker compose up -d --build` cannot build the app image in this environment: the jOOQ
+      codegen Maven plugin needs a Docker socket during `mvn package`, which a plain `docker build`
+      does not provide. Pre-existing Dockerfile limitation, not introduced by this spec; see
+      progress_report.md.
 
 ## Test plan
 
-- `TransferApiIT` — full HTTP round trip through MockMvc/RestAssured against Testcontainers.
-- `ErrorModelIT` — one test per error code in the catalogue.
-- `SecurityIT` — 401 on missing/invalid key; 200 on valid.
+- `TransferApiIT` — full HTTP round trip through `TestRestTemplate` against Testcontainers.
+- `ErrorModelIT` / `InternalErrorIT` / `GlobalExceptionHandlerUnitTest` — one test per error code in
+  the catalogue; future-spec-only codes get a direct handler unit test.
+- `SecurityIT` — 401 on missing/invalid key; 200 on valid; permitAll routes reachable without a key.
 - `PaginationIT` — cursor stability across a concurrent insert (the reason we chose cursor over
-  offset in the first place).
+  offset in the first place), limit clamping, empty/last-page shape, malformed cursor.
+- `OpenApiIT` — served document lists the implemented `/api/v1` paths and the `ApiKeyAuth` scheme.

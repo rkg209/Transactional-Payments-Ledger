@@ -1,5 +1,7 @@
 package org.ledger.account;
 
+import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 import org.ledger.db.AccountRepository;
 import org.ledger.db.generated.tables.records.AccountsRecord;
@@ -26,6 +28,18 @@ public class AccountService {
         .findById(accountId)
         .map(AccountService::toResult)
         .orElseThrow(() -> new AccountNotFoundException(accountId));
+  }
+
+  /**
+   * Fetches one keyset page. {@code afterCreatedAt}/{@code afterId} are both null for the first
+   * page. Returns up to {@code limit + 1} results; the caller uses the extra row to compute {@code
+   * hasMore} without a separate count query.
+   */
+  @Transactional(readOnly = true)
+  public List<AccountResult> listAccounts(OffsetDateTime afterCreatedAt, UUID afterId, int limit) {
+    return accountRepository.findPage(afterCreatedAt, afterId, limit).stream()
+        .map(AccountService::toResult)
+        .toList();
   }
 
   private static AccountResult toResult(AccountsRecord record) {

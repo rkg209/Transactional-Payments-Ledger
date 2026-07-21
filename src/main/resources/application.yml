@@ -36,6 +36,15 @@ ledger:
   isolation-level: ${ISOLATION_LEVEL:read_committed}
   reconciliation:
     interval-ms: ${RECONCILIATION_INTERVAL_MS:60000}
+  # Comma-separated set of valid API keys (ADR 0003). API_KEYS wins if set; API_KEY
+  # (singular) is also honored for a single-key deployment. The default dev key
+  # ships so `make run` / `docker compose up` work out of the box -- demo.sh uses
+  # this same key. Never a production credential.
+  api-keys: ${API_KEYS:${API_KEY:secret-dev-key-001}}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
 
 management:
   endpoints:

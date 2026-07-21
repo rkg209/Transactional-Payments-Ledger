@@ -319,3 +319,98 @@ Postgres seeded with a production-equivalent transfer: `global_sum = 0`, and per
 `balance == Σ(entries)` held exactly for every account with no fixture seed. Zero drift.
 
 ---
+
+## [005] SPEC 0002 — Transfer API: HTTP surface, auth, errors, pagination, OpenAPI — 2026-07-21
+**Spec:** SPEC 0002
+**What:** Added the `api` layer end to end: `AccountController` (`POST/GET /accounts`,
+`GET /accounts/{id}`, `GET /accounts/{id}/balance`) and `TransferController`
+(`POST /transfers`, `GET /transfers/{id}`); the full DTO set (`org.ledger.api.dto`); `ErrorCode` +
+`GlobalExceptionHandler` covering every row of planning/05-api-design.md §3.2; a `RequestIdFilter`;
+`SecurityConfig` + `ApiKeyAuthFilter` + `ApiKeyAuthenticationEntryPoint` (API-key auth on
+`/api/v1/**`); cursor pagination (`Cursor`, `AccountRepository.findPage`,
+`AccountService.listAccounts`) backed by new migration `V3__accounts_pagination_index.sql`; a
+springdoc `OpenApiConfig` serving `/v3/api-docs` and Swagger UI; `demo.sh`. Widened `TransferResult`
+to the full row and added `TransferService` guards (`SameAccountException`,
+`InvalidAmountException`, `CurrencyMismatchException`) ahead of the balance check. Added ADR 0003
+(API-key auth over JWT) and ADR 0004 (cursor pagination + springdoc as the OpenAPI source of truth,
+superseding the stale `planning/05-openapi.yaml`). New tests: `TransferApiIT`, `SecurityIT`,
+`ErrorModelIT`, `InternalErrorIT`, `GlobalExceptionHandlerUnitTest`, `PaginationIT`, `OpenApiIT`.
+**Why:** FR-7, FR-8, FR-9, FR-12, FR-13, NFR-22, DR-8 — none of SPEC 0001's transfer logic was
+reachable over HTTP before this; the acceptance bar was a curl-able transfer with the total
+conserved, every §3.2 error reachable, and an OpenAPI document that cannot drift from the real
+controllers.
+**How:** Resolved two planning-doc conflicts explicitly in the plan before writing code (see ADR
+0004): cursor pagination per the authoritative §5 prose rather than the stale yaml's offset
+envelope, and a springdoc-generated OpenAPI document rather than hand-maintaining the yaml (which
+has no `paths:` section at all). Exception types whose *trigger* belongs to a later spec
+(`IdempotencyFingerprintMismatchException`, `IdempotencyTimeoutException`,
+`OptimisticLockException`, `SagaCompensatedException`, `SagaNotFoundException`) were declared now,
+each in a package `api` is actually allowed to depend on per the §1.2 matrix, so
+`GlobalExceptionHandler`'s mapping is provably correct before SPEC 0003/0004/0006 add a throw site.
+`OptimisticLockException` specifically went into `org.ledger.transfer`, not `org.ledger.concurrency`
+— see Issues faced #1.
+**Issues faced:**
+1. The plan's own module table (`planning/03-system-design.md` §1.3, "`GlobalExceptionHandler` maps
+   `OptimisticLockException`") is in direct tension with §1.2's dependency matrix (`api` must not
+   import `concurrency`). Referencing a class — even without a static import — is a real bytecode
+   dependency ArchUnit checks, so `GlobalExceptionHandler` catching an `org.ledger.concurrency.*`
+   type would fail `ArchitectureFitnessTest` the moment that package gained classes.
+2. The formatter hook (spotless, run after every `Write`/`Edit`) fires between edits, not just at
+   the end. Splitting an import addition and its first use across two separate `Edit` calls let
+   `removeUnusedImports` strip the "unused" import after edit 1, before edit 2 added the usage that
+   would have justified it — `AccountService`, `AccountRepository`, and `ApiKeyAuthFilter` all lost
+   an import this way and failed to compile.
+3. `ApiKeyAuthFilter`, registered via `addFilterBefore`, runs on *every* request regardless of the
+   `authorizeHttpRequests` rules — it is not scoped by them. The first version unconditionally
+   demanded a valid key before the authorization chain ever got to evaluate `permitAll`, so
+   `/health`, `/actuator/health`, and the springdoc routes all returned 401 instead of the intended
+   200. `WalkingSkeletonIT` (a SPEC 0000 test, untouched by this spec) caught it immediately.
+4. `jOOQ`'s plain-SQL `dsl.execute(String, Object...)` bound an `OffsetDateTime` bind value as
+   `character varying` rather than `timestamptz` in `PaginationIT`'s raw backdated INSERT, so
+   Postgres rejected the insert (`column "created_at" is of type timestamp with time zone but
+   expression is of type character varying`).
+5. `@MockBean`-based tests (`InternalErrorIT`) failed to load their Spring context: Mockito/Byte
+   Buddy on this machine's Java 26 JDK (`JAVA_HOME` newer than the 21 this project targets, and
+   newer than Byte Buddy officially supports) refused to subclass the concrete `AccountService`
+   for mocking.
+6. `docker compose up -d --build` cannot build the app image in this sandboxed environment: `mvn
+   package` inside the Dockerfile's build stage runs the jOOQ Testcontainers codegen plugin, which
+   needs a Docker socket that a plain `docker build` does not provide access to. Pre-existing
+   Dockerfile limitation from SPEC 0000/0001, not introduced here.
+**Resolution:**
+1. Declared `OptimisticLockException` in `org.ledger.transfer` instead of `org.ledger.concurrency`
+   — `TransferService` is the class that actually coordinates `ConcurrencyStrategy` and would
+   surface an exhausted retry, and `api` is allowed to depend on `transfer`. Documented the
+   reasoning directly in the exception's Javadoc so a future reader doesn't "fix" it back into
+   `concurrency` and reintroduce the ArchUnit violation.
+2. Re-added the three stripped imports by hand and re-ran `mvn compile` to confirm. Lesson for this
+   session: when an edit adds a member that uses a type not yet imported, add the import in the
+   *same* `Edit` call, not a follow-up one — the formatter hook runs in between and has no way to
+   know a later edit is coming.
+3. Extracted the five permitted-route patterns into one shared `PublicPaths.PATTERNS` array used by
+   both `SecurityConfig`'s `permitAll()` matchers and a new `ApiKeyAuthFilter.shouldNotFilter`
+   override (`AntPathMatcher` against `getServletPath()`), so the filter and the authorization rule
+   can never drift apart, and re-ran the full suite to confirm `/health`/`/actuator/**` came back to
+   200.
+4. Cast the bind placeholder explicitly (`?::timestamptz`) and passed the timestamp as its
+   `toString()` form instead of the raw `OffsetDateTime`, which resolved the type ambiguity.
+5. Isolated the `@MockBean` test into its own class and passed
+   `-Dnet.bytebuddy.experimental=true` to both the surefire and failsafe plugin configuration in
+   `pom.xml` (alongside the existing Docker API version pin) — a general fix for this class of test
+   on newer JDKs, not a workaround limited to one test.
+6. Not fixed in this spec (out of scope for SPEC 0002 — it's a build-pipeline concern, not an API
+   concern). Verified `demo.sh` and the acceptance criteria instead against `docker compose up -d
+   postgres` plus `mvn spring-boot:run` on the host, which is a faithful stand-in: the same jar,
+   the same migrations, the same Postgres image, just built outside the container. Flagged in
+   `specs/0002-transfer-api.md` for whoever next touches the Dockerfile.
+
+Full build verified clean: `mvn -B verify` — 65/65 tests green (9 ArchUnit + 56 unit/integration,
+all against real Postgres via Testcontainers) — and `mvn spotless:check` clean. Manually verified
+against a running stack: unauthenticated `GET /api/v1/accounts` → 401, authenticated → 200,
+`/v3/api-docs` → 200, Swagger UI renders. `/invariant-check` run via raw SQL against the
+`docker compose`-launched Postgres after `demo.sh`: `global_sum = 0` (the invariant that matters).
+The per-account `balance == Σ(entries)` check showed expected, documented non-zero deltas for
+accounts with an out-of-band `seedInitialBalance`-style seed (exactly the carve-out SPEC 0001's
+`AbstractPostgresIT` already documents) — not drift.
+
+---
