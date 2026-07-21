@@ -18,6 +18,8 @@ generated-sources/
 .project
 .classpath
 nbproject/
+*.swp
+*.swo
 
 # OS
 .DS_Store
@@ -30,7 +32,19 @@ logs/
 # Env — never commit secrets
 .env
 .env.local
+.env*.local
 
-# Claude Code local overrides (`.claude/settings.json` IS committed on purpose:
-# the guardrails and workflow are part of the deliverable)
-.claude/settings.local.json
+# Claude Code configuration and workflows
+.claude/
+.mcp.json
+CLAUDE.md
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+planning/
+specs/
+progress_report.md
+transactional-payments-ledger-spec.md
