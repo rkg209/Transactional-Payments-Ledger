@@ -644,3 +644,90 @@ duplicates out of 300 concurrent requests over 100 shared idempotency keys, `glo
 throughout, `SELECT count(*) FROM transfers WHERE idempotency_key LIKE 'hammer-%'` = exactly 100.
 
 ---
+
+## [009] SPEC 0005 — Invariant & reconciliation: standing checker, not just a manual skill — 2026-07-21
+**Spec:** SPEC 0005
+**What:** New `org.ledger.reconciliation` package (`ReconciliationService`, `ReconciliationReport`,
+`AccountDrift`), `org.ledger.db.ReconciliationRepository` + `AccountDriftRow`, the per-account drift
+query (`LedgerEntryRepository.findDriftedAccounts()`), `ReconciliationController`
+(`GET /api/v1/reconciliation/report`, `POST /run`), `api/dto/ReconciliationReportResponse` +
+`AccountDriftDetail`, `infrastructure/SchedulingConfig` (`@Scheduled`, gated by
+`ledger.reconciliation.scheduled`), ADR 0007, and six new ITs under
+`src/test/java/org/ledger/reconciliation/`. `AbstractPostgresIT` gained `createGenesisAccount`,
+`fundFromGenesis`, and `injectDrift` fixtures.
+**Why:** FR-11/FR-24/FR-25/FR-26/NFR-20 — every prior spec asserted "entries sum to zero" and
+"balance == Σentries" only inside its own tests; nothing continuously re-derived either invariant
+from the ledger at runtime, persisted the verdict, or screamed when it failed.
+**How:** `ReconciliationService.runCheck()` uses two plain `TransactionTemplate`s (read-only, then
+`REQUIRES_NEW` for the report insert) instead of `@Transactional` annotations, because it calls its
+own read step and write step on `this` — a self-invocation that never goes through the Spring proxy
+`@Transactional` depends on, same reasoning `TransferService` already uses `TransactionTemplate` for.
+The per-account query is a `LEFT JOIN` (an account with a balance and zero entries is drift too;
+`INNER JOIN` — the form planning/03 §3.3 and the `/invariant-check` skill originally used — makes
+that case invisible) and reads `accounts.balance` and the grouped `ledger_entries` sum in one SQL
+statement, so both sides come from one snapshot under READ COMMITTED. Metrics: a gauge
+(`reconciliation.global_sum`) bound once to a held `AtomicLong`, plus two counters
+(`reconciliation.drift.count`, `reconciliation.runs.total`).
+**Issues faced:**
+1. The drift query originally lived in `ReconciliationRepository` and referenced the generated
+   `LedgerEntries` types directly — `ArchitectureFitnessTest.only_ledger_entry_repository_touches_ledger_entries_generated_types`
+   failed (violated 11 times), since only `LedgerEntryRepository` may reference those types.
+2. The plan's genesis-account design called for a deeply negative `min_balance` so genesis alone
+   could fund other accounts while every account, including genesis, still satisfied
+   `balance == Σentries` exactly. `accounts_min_balance_gte_zero` (`CHECK (min_balance >= 0)`,
+   unconditional, every row, both INSERT and UPDATE) makes that impossible: no account in this
+   schema can ever go negative, so no account can donate the first unit of capital to another
+   without already holding it.
+3. `AbstractPostgresIT.createGenesisAccount` initially called `accountRepository.insert(...)`
+   directly with no wrapping transaction; with `spring.datasource.hikari.auto-commit=false`, the
+   insert was silently never committed, and the very next statement in the same test
+   (`fundFromGenesis`) failed with `AccountNotFoundException` against an ID that had, from the
+   test's point of view, just been created.
+4. `ReconciliationApiIT`'s unauthenticated-POST assertion failed with `ResourceAccess: cannot retry
+   due to server authentication, in streaming mode` — a `TestRestTemplate`/`HttpURLConnection`
+   limitation retrying a POST body after a 401 challenge, not a server defect.
+5. `ReconciliationScheduleIT` (the one IT that runs the real `@Scheduled` job) intermittently failed
+   its `@BeforeEach` `TRUNCATE` with `DeadlockLoserDataAccessException`: a scheduled run's read
+   transaction and the test's `TRUNCATE` can legitimately take locks in opposite order when a
+   scheduled run is mid-flight at test start.
+6. `ReconciliationPerformanceIT`'s `EXPLAIN` showed a plain `Index Scan` on the narrower
+   `idx_ledger_entries_account_id`, never `Index Only Scan` on the wider covering
+   `idx_ledger_entries_reconciliation`, even after `ANALYZE` and even with `enable_seqscan = off`.
+**Resolution:**
+1. Moved `findDriftedAccounts()` into `LedgerEntryRepository` itself (it already owns every other
+   read/write against `ledger_entries`); `ReconciliationRepository` now just delegates to it, the
+   same pattern `globalEntrySum()` already used.
+2. Accepted that a truly zero-drift genesis is not achievable under this schema and changed the
+   design instead of fighting it: genesis is seeded once with a known constant
+   (`GENESIS_STARTING_CAPITAL`, via the existing `seedInitialBalance` — the same "capital that
+   predates this ledger" concept already documented there) and funds every other test account
+   through real `TransferService` transfers. `balance` and `entrySum` move together, unit for unit,
+   for every transfer out of genesis, so its drift is fixed at exactly the seed amount forever,
+   independent of how much is drawn from it — reconciliation tests assert on that one known,
+   named account explicitly instead of expecting zero drift system-wide. Recorded as ADR 0007
+   decision 5, with the corrected rationale (the schema is right to forbid this; some account must
+   still start from an external seed).
+3. Wrapped the insert in `tx.execute(...)`, matching how `seedInitialBalance`/`injectDrift` already
+   wrap their writes. Lesson: a test helper that calls a bare repository method (bypassing the
+   `@Transactional` service layer on purpose) must open its own transaction explicitly — nothing
+   else will.
+4. Followed `SecurityIT`'s existing convention (already GET-only for exactly this reason) rather
+   than fighting the client library: `ReconciliationApiIT` now asserts 401 via `GET` only.
+5. Added a bounded retry-on-deadlock loop to `AbstractPostgresIT.resetDatabase()`, mirroring
+   `TransferService`'s own retry-on-serialization-failure/deadlock handling for the identical
+   SQLSTATE — the right fix for two genuinely concurrent, correct transactions racing, not a bug in
+   either one.
+6. Discovered `ANALYZE` alone does not set the visibility map's all-visible bits that
+   `Index Only Scan` needs to skip the heap — only `VACUUM` does. Added a `vacuumAnalyze` helper that
+   runs `VACUUM ANALYZE` via a raw connection with autocommit toggled on (`VACUUM` cannot run inside
+   a transaction block, and `TransactionTemplate` always opens one), and forced
+   `enable_seqscan`/`enable_indexscan`/`enable_bitmapscan` off for the `EXPLAIN` itself, since at
+   this fixture's small scale Postgres's cost-based planner correctly prefers a plan the test isn't
+   trying to rule out — the point of the test is that the covering index is index-only-scannable at
+   all, not that Postgres always chooses it unprompted at a few thousand rows.
+
+Full suite green: `mvn -B verify` — 160 tests, 0 failures, 0 errors. `mvn spotless:check` clean.
+`.claude/skills/invariant-check/SKILL.md` corrected to the `LEFT JOIN` form; `specs/0005-invariant-reconciliation.md`
+status flipped to `implemented`.
+
+---

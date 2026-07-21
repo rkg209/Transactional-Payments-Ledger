@@ -1,6 +1,6 @@
 # SPEC 0005 — Invariant & reconciliation
 
-Status: draft
+Status: implemented
 Depends on: 0004
 Requirements: FR-11, FR-24, FR-25, FR-26, NFR-3, NFR-20
 

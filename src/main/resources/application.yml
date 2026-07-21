@@ -41,6 +41,10 @@ ledger:
     backoff-base-ms: ${CONCURRENCY_BACKOFF_BASE_MS:50}
   reconciliation:
     interval-ms: ${RECONCILIATION_INTERVAL_MS:60000}
+    # Off in most test contexts (AbstractPostgresIT sets this false); a background job firing
+    # mid-test against a TRUNCATE-ing suite is a flake generator, and every reconciliation IT
+    # drives runCheck() explicitly. ReconciliationScheduleIT turns it back on to prove the wiring.
+    scheduled: ${RECONCILIATION_SCHEDULED:true}
   # Comma-separated set of valid API keys (ADR 0003). API_KEYS wins if set; API_KEY
   # (singular) is also honored for a single-key deployment. The default dev key
   # ships so `make run` / `docker compose up` work out of the box -- demo.sh uses
