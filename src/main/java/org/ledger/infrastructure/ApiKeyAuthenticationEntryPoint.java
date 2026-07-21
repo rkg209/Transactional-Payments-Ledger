@@ -4,6 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import org.ledger.api.error.ErrorCode;
+import org.ledger.api.error.ErrorResponseWriter;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.stereotype.Component;
@@ -22,6 +23,6 @@ public class ApiKeyAuthenticationEntryPoint implements AuthenticationEntryPoint 
       HttpServletResponse response,
       AuthenticationException authException)
       throws IOException {
-    SecurityErrorResponseWriter.write(response, ErrorCode.MISSING_CREDENTIALS);
+    ErrorResponseWriter.write(response, ErrorCode.MISSING_CREDENTIALS);
   }
 }

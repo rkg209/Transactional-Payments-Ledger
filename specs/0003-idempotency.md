@@ -1,6 +1,6 @@
 # SPEC 0003 — Idempotency
 
-Status: draft
+Status: implemented
 Depends on: 0002
 Requirements: FR-14, FR-15, FR-16, FR-17, FR-18, NFR-5
 
@@ -47,14 +47,14 @@ time; the filter above it decides whether to call it at all.
 
 ## Acceptance criteria (the measurable "done")
 
-- [ ] Replaying one key N times sequentially → **exactly one** transfer applied; N−1 replays return
+- [x] Replaying one key N times sequentially → **exactly one** transfer applied; N−1 replays return
       the stored response with `X-Idempotent-Replayed: true`.
-- [ ] **Two concurrent identical requests → exactly one transfer applied**; the other returns the
+- [x] **Two concurrent identical requests → exactly one transfer applied**; the other returns the
       same stored result. Neither returns an error.
-- [ ] Same key + different body → `422 IDEMPOTENCY_KEY_REUSE`, no transfer executed.
-- [ ] A key whose request failed is in `FAILED` state and may be retried successfully.
-- [ ] Replay of a `201` returns `200` with a byte-identical body.
-- [ ] Money is conserved and Σ = 0 holds across every idempotency test.
+- [x] Same key + different body → `422 IDEMPOTENCY_KEY_REUSE`, no transfer executed.
+- [x] A key whose request failed is in `FAILED` state and may be retried successfully.
+- [x] Replay of a `201` returns `200` with a byte-identical body.
+- [x] Money is conserved and Σ = 0 holds across every idempotency test.
 
 ## Test plan
 

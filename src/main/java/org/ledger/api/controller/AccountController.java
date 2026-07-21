@@ -36,10 +36,6 @@ public class AccountController {
     this.accountService = accountService;
   }
 
-  /**
-   * {@code Idempotency-Key} is required but not yet enforced — see SPEC 0003. A duplicate request
-   * currently creates a second account.
-   */
   @PostMapping
   public ResponseEntity<AccountResponse> createAccount(
       @RequestHeader("Idempotency-Key") String idempotencyKey,

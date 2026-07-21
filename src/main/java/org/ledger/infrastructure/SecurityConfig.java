@@ -3,6 +3,7 @@ package org.ledger.infrastructure;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import org.ledger.idempotency.IdempotencyFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -27,6 +28,7 @@ public class SecurityConfig {
   public SecurityFilterChain securityFilterChain(
       HttpSecurity http,
       ApiKeyAuthFilter apiKeyAuthFilter,
+      IdempotencyFilter idempotencyFilter,
       ApiKeyAuthenticationEntryPoint entryPoint)
       throws Exception {
     http.csrf(csrf -> csrf.disable())
@@ -42,7 +44,8 @@ public class SecurityConfig {
                     .anyRequest()
                     .denyAll())
         .exceptionHandling(handling -> handling.authenticationEntryPoint(entryPoint))
-        .addFilterBefore(apiKeyAuthFilter, UsernamePasswordAuthenticationFilter.class);
+        .addFilterBefore(apiKeyAuthFilter, UsernamePasswordAuthenticationFilter.class)
+        .addFilterAfter(idempotencyFilter, ApiKeyAuthFilter.class);
     return http.build();
   }
 

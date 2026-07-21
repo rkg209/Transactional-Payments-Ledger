@@ -40,7 +40,11 @@ public class TransferService {
 
   @Transactional
   public TransferResult execute(
-      UUID fromAccountId, UUID toAccountId, long amountMinor, String currency) {
+      UUID fromAccountId,
+      UUID toAccountId,
+      long amountMinor,
+      String currency,
+      String idempotencyKey) {
     if (fromAccountId.equals(toAccountId)) {
       throw new SameAccountException();
     }
@@ -71,7 +75,8 @@ public class TransferService {
     }
 
     TransfersRecord transfer =
-        transferRepository.insertPending(fromAccountId, toAccountId, amountMinor, currency);
+        transferRepository.insertPending(
+            fromAccountId, toAccountId, amountMinor, currency, idempotencyKey);
     ledgerEntryRepository.insertBalancedPair(
         transfer.getId(), fromAccountId, toAccountId, amountMinor);
     accountRepository.applyDelta(fromAccountId, -amountMinor);

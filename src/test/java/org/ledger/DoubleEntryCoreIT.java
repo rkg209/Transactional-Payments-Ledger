@@ -30,7 +30,8 @@ class DoubleEntryCoreIT extends AbstractPostgresIT {
         accountService.getAccount(from.id()).balance()
             + accountService.getAccount(to.id()).balance();
 
-    TransferResult result = transferService.execute(from.id(), to.id(), 2_500L, "USD");
+    TransferResult result =
+        transferService.execute(from.id(), to.id(), 2_500L, "USD", "double-entry-core-it-key");
 
     assertThat(result.status()).isEqualTo(TransferStatus.COMPLETED);
 

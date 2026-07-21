@@ -51,7 +51,7 @@ class DoubleEntryPropertyIT extends AbstractPostgresIT {
       long amount = 1 + random.nextInt(50_000);
 
       try {
-        transferService.execute(from.id(), to.id(), amount, "USD");
+        transferService.execute(from.id(), to.id(), amount, "USD", "property-it-key-" + i);
       } catch (InsufficientFundsException expected) {
         // Overdraft correctly rejected -- verified below that state is untouched.
       }

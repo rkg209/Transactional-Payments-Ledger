@@ -19,13 +19,18 @@ public class TransferRepository {
   }
 
   public TransfersRecord insertPending(
-      UUID fromAccountId, UUID toAccountId, long amountMinor, String currency) {
+      UUID fromAccountId,
+      UUID toAccountId,
+      long amountMinor,
+      String currency,
+      String idempotencyKey) {
     return dsl.insertInto(TRANSFERS)
         .set(TRANSFERS.FROM_ACCOUNT_ID, fromAccountId)
         .set(TRANSFERS.TO_ACCOUNT_ID, toAccountId)
         .set(TRANSFERS.AMOUNT_MINOR, amountMinor)
         .set(TRANSFERS.CURRENCY, currency)
         .set(TRANSFERS.STATUS, "PENDING")
+        .set(TRANSFERS.IDEMPOTENCY_KEY, idempotencyKey)
         .returning()
         .fetchOne();
   }

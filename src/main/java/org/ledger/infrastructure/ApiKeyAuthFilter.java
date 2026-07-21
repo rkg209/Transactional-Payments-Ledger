@@ -10,6 +10,7 @@ import java.security.MessageDigest;
 import java.util.List;
 import java.util.Set;
 import org.ledger.api.error.ErrorCode;
+import org.ledger.api.error.ErrorResponseWriter;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -55,13 +56,13 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
       throws ServletException, IOException {
     String header = request.getHeader(HttpHeaders.AUTHORIZATION);
     if (header == null || !header.startsWith(SCHEME_PREFIX)) {
-      SecurityErrorResponseWriter.write(response, ErrorCode.MISSING_CREDENTIALS);
+      ErrorResponseWriter.write(response, ErrorCode.MISSING_CREDENTIALS);
       return;
     }
 
     String presented = header.substring(SCHEME_PREFIX.length());
     if (!isValidKey(presented)) {
-      SecurityErrorResponseWriter.write(response, ErrorCode.INVALID_CREDENTIALS);
+      ErrorResponseWriter.write(response, ErrorCode.INVALID_CREDENTIALS);
       return;
     }
 

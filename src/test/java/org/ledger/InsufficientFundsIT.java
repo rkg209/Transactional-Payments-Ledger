@@ -22,7 +22,10 @@ class InsufficientFundsIT extends AbstractPostgresIT {
     AccountResult from = accountService.createAccount("broke", "USD", 0);
     AccountResult to = accountService.createAccount("rich", "USD", 0);
 
-    assertThatThrownBy(() -> transferService.execute(from.id(), to.id(), 500L, "USD"))
+    assertThatThrownBy(
+            () ->
+                transferService.execute(
+                    from.id(), to.id(), 500L, "USD", "insufficient-funds-it-key-1"))
         .isInstanceOf(InsufficientFundsException.class);
 
     assertThat(accountService.getAccount(from.id()).balance()).isZero();
@@ -38,7 +41,10 @@ class InsufficientFundsIT extends AbstractPostgresIT {
     seedAccountState(from.id(), 150L, 100L);
 
     // Balance (150) - amount (100) = 50, which is below min_balance (100).
-    assertThatThrownBy(() -> transferService.execute(from.id(), to.id(), 100L, "USD"))
+    assertThatThrownBy(
+            () ->
+                transferService.execute(
+                    from.id(), to.id(), 100L, "USD", "insufficient-funds-it-key-2"))
         .isInstanceOf(InsufficientFundsException.class);
 
     assertThat(accountService.getAccount(from.id()).balance()).isEqualTo(150L);

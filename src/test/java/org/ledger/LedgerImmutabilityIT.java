@@ -28,7 +28,10 @@ class LedgerImmutabilityIT extends AbstractPostgresIT {
     AccountResult to = accountService.createAccount("immutability-dst", "USD", 0);
     seedInitialBalance(from.id(), 1_000L);
 
-    UUID transferId = transferService.execute(from.id(), to.id(), 100L, "USD").transferId();
+    UUID transferId =
+        transferService
+            .execute(from.id(), to.id(), 100L, "USD", "ledger-immutability-it-key")
+            .transferId();
 
     UUID entryId =
         tx.execute(

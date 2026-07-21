@@ -50,7 +50,9 @@ class UnbalancedPostingIT extends AbstractPostgresIT {
     // from == to trips the transfers_different_accounts CHECK deep inside the write sequence,
     // after the (read-only) balance guard has already passed -- proving the whole write sequence
     // rolls back as one unit, not just that early validation works.
-    assertThatThrownBy(() -> transferService.execute(account.id(), account.id(), 100L, "USD"));
+    assertThatThrownBy(
+        () ->
+            transferService.execute(account.id(), account.id(), 100L, "USD", "unbalanced-it-key"));
 
     assertThat(dsl.fetchCount(DSL.table("transfers"))).isZero();
     assertThat(dsl.fetchCount(DSL.table("ledger_entries"))).isZero();

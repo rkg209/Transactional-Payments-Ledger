@@ -414,3 +414,70 @@ accounts with an out-of-band `seedInitialBalance`-style seed (exactly the carve-
 `AbstractPostgresIT` already documents) — not drift.
 
 ---
+
+## [006] SPEC 0003 — Idempotency: exactly-once via a unique-constraint claim — 2026-07-21
+**Spec:** SPEC 0003
+**What:** `IdempotencyFilter` (`org.ledger.idempotency`), `FingerprintService`,
+`CachedBodyHttpServletRequest`, `IdempotencyKeyRepository` (`org.ledger.db`), registered after
+`ApiKeyAuthFilter` in `SecurityConfig`. `TransferController`/`TransferService`/`TransferRepository`
+now thread the claimed key through to `transfers.idempotency_key`, making that column's secondary
+unique guard live. `SecurityErrorResponseWriter` promoted and renamed to the public
+`api.error.ErrorResponseWriter` (with a `details` overload) so both `ApiKeyAuthFilter` and
+`IdempotencyFilter` can render the standard error envelope from outside the DispatcherServlet.
+New tests: `IdempotencyReplayIT`, `ConcurrentDuplicateIT` (100 reps), `FingerprintMismatchIT`,
+`FailedKeyRetryIT`. New `docs/adr/0005-idempotency-via-unique-constraint.md`.
+**Why:** FR-14–FR-18, NFR-5. Closes the one hole in the project's headline claim — until this spec,
+`POST /transfers` and `POST /accounts` required `Idempotency-Key` but ignored it, so a retried
+request double-applied.
+**How:** A single `INSERT ... ON CONFLICT DO NOTHING` on `idempotency_keys.key` is the concurrency
+primitive (never `SELECT`-then-`INSERT`, which locks nothing for a row that doesn't exist yet). The
+filter is deliberately not `@Transactional`: the claim commits and is visible to a racing request
+immediately, rather than being held open for the guarded operation's full duration. 4xx responses
+mark the key `COMPLETED` (replayed verbatim on retry); 5xx/unhandled marks it `FAILED` (retryable,
+via a `WHERE status = 'FAILED'`-guarded reclaim so two racing retries can't both win). Replays
+always return `200`, never the original `201`. Losers of the claim race poll every 25 ms for up to
+1 s before giving up with `503 IDEMPOTENCY_TIMEOUT`.
+**Issues faced:**
+1. The exact import-stripping trap already documented in entry 005: adding an import in one `Edit`
+   call and its first use in a follow-up call let the Spotless formatter hook — which runs between
+   edits, not just at the end — remove the "unused" import before the usage landed. Hit this
+   repeatedly across `IdempotencyFilter`, `SecurityConfig`, `ApiKeyAuthFilter`,
+   `ApiKeyAuthenticationEntryPoint`, and `TransferController` while wiring the new filter in.
+2. The real bug: `IdempotencyReplayIT`'s first assertion passed, but every retry re-executed the
+   transfer instead of replaying it, eventually failing on `transfers_idempotency_key_uq`. Root
+   cause — `application.yml` sets `spring.datasource.hikari.auto-commit: false` project-wide
+   (deliberately, per its own comment: "HikariCP must never silently retry a failed transaction").
+   `IdempotencyKeyRepository`'s writes ran outside any `@Transactional` boundary (by design — see
+   the ADR on why the filter itself must not be `@Transactional`), so with auto-commit off, each
+   write appeared to succeed (`Affected row(s): 1`, visible within its own connection) but was
+   silently rolled back the moment its connection returned to the pool, because nothing ever called
+   `commit()`. A direct repository-level repro (two sequential `tryClaim` calls, then
+   `SELECT count(*)`) confirmed the row count was 0 immediately after two "successful" claims.
+   Every other DB-writing method in the codebase already routes through an `@Transactional` service
+   method for exactly this reason; the idempotency repository, called directly from a filter, was
+   the first to be exempt.
+3. A minor correctness gap surfaced during the manual `curl` verification pass: the replay response
+   used `response.setContentType("application/json")` without `setCharacterEncoding`, so
+   `getWriter()` defaulted to ISO-8859-1 — harmless for the ASCII bodies in this spec's tests, but a
+   latent bug against the "byte-for-byte replay" claim for any non-ASCII content.
+**Resolution:**
+1. Re-added each stripped import in the same `Edit` call as (or immediately after confirming) its
+   usage was already present in the file, rather than in a separate preceding call.
+2. Marked every `IdempotencyKeyRepository` method `@Transactional` (`readOnly = true` on `find`), so
+   each call opens and commits its own transaction despite the connection pool's auto-commit being
+   off — restoring the "three separate, individually committed statements" the design calls for.
+   Documented the reason directly in the repository's Javadoc so it isn't "simplified" away later.
+3. Added `response.setCharacterEncoding(StandardCharsets.UTF_8.name())` alongside the content-type
+   on the replay path.
+
+Full build verified clean: `mvn -B verify` — 143/143 tests green (9 ArchUnit + 134 unit/integration,
+including 100 repetitions of `ConcurrentDuplicateIT`, all against real Postgres via Testcontainers)
+— and `mvn spotless:check` clean. Manually verified against `docker compose up -d postgres` +
+`mvn spring-boot:run`: same key + body twice → `201` then `200` with `X-Idempotent-Replayed: true`
+and a byte-identical body; same key + different amount → `422 IDEMPOTENCY_KEY_REUSE`;
+`idempotency_keys` rows show `COMPLETED` with 64-char fingerprints; `transfers.idempotency_key` is
+populated. `/invariant-check` against that same manual run: `global_sum = 0`; the three accounts
+showing a nonzero `balance - Σ(entries)` delta all carry an out-of-band seeded balance from this
+manual session (the same documented, non-drift carve-out as SPEC 0001/0002), not real drift.
+
+---

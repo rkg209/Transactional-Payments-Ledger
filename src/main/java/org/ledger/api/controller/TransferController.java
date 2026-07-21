@@ -1,10 +1,12 @@
 package org.ledger.api.controller;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.net.URI;
 import java.util.UUID;
 import org.ledger.api.dto.CreateTransferRequest;
 import org.ledger.api.dto.TransferResponse;
+import org.ledger.idempotency.IdempotencyFilter;
 import org.ledger.transfer.TransferResult;
 import org.ledger.transfer.TransferService;
 import org.springframework.http.ResponseEntity;
@@ -26,17 +28,20 @@ public class TransferController {
     this.transferService = transferService;
   }
 
-  /**
-   * {@code Idempotency-Key} is required but not yet enforced — see SPEC 0003. A duplicate request
-   * currently double-applies the transfer.
-   */
   @PostMapping
   public ResponseEntity<TransferResponse> createTransfer(
       @RequestHeader("Idempotency-Key") String idempotencyKey,
-      @Valid @RequestBody CreateTransferRequest request) {
+      @Valid @RequestBody CreateTransferRequest request,
+      HttpServletRequest httpRequest) {
+    Object claimedKey = httpRequest.getAttribute(IdempotencyFilter.IDEMPOTENCY_KEY_ATTRIBUTE);
+    String key = claimedKey != null ? (String) claimedKey : idempotencyKey;
     TransferResult result =
         transferService.execute(
-            request.fromAccountId(), request.toAccountId(), request.amount(), request.currency());
+            request.fromAccountId(),
+            request.toAccountId(),
+            request.amount(),
+            request.currency(),
+            key);
     TransferResponse body = TransferResponse.from(result);
     return ResponseEntity.created(URI.create("/api/v1/transfers/" + body.id())).body(body);
   }
