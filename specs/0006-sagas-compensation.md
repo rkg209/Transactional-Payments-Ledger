@@ -1,6 +1,6 @@
 # SPEC 0006 — Sagas & multi-step transfers with compensation
 
-Status: draft
+Status: implemented
 Depends on: 0005
 Requirements: FR-27, FR-28, FR-29, FR-30, FR-31, NFR-4, NFR-10, CON-7
 

@@ -3,9 +3,8 @@ package org.ledger.saga;
 import java.util.UUID;
 
 /**
- * Placeholder exception type owned by SPEC 0006. Declared now so {@code GlobalExceptionHandler}'s
- * {@code 404 SAGA_NOT_FOUND} mapping (planning/05-api-design.md §3.5) exists before the saga
- * orchestrator does.
+ * Thrown by {@link SagaOrchestrator#getSaga} when no saga exists with the given id. Maps to {@code
+ * 404 SAGA_NOT_FOUND} (planning/05-api-design.md §3.5).
  */
 public class SagaNotFoundException extends RuntimeException {
 

@@ -3,8 +3,8 @@ package org.ledger.saga;
 import java.util.UUID;
 
 /**
- * Placeholder exception type owned by SPEC 0006 — see {@link SagaNotFoundException}. Maps to {@code
- * 422 SAGA_COMPENSATED}.
+ * Thrown by {@link SagaOrchestrator#execute} when a step fails and the saga is rolled back via
+ * compensation of every prior-completed step. Maps to {@code 422 SAGA_COMPENSATED}.
  */
 public class SagaCompensatedException extends RuntimeException {
 

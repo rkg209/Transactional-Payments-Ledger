@@ -731,3 +731,101 @@ Full suite green: `mvn -B verify` — 160 tests, 0 failures, 0 errors. `mvn spot
 status flipped to `implemented`.
 
 ---
+## [010] SPEC 0006 — Sagas & multi-step transfers with compensation — 2026-07-22
+**Spec:** SPEC 0006
+**What:** Implemented the `org.ledger.saga` module (`SagaOrchestrator`, `LegTransferStep`,
+`SagaDefinition`/`SagaLeg`/`SagaContext`, `SagaState`/`SagaStepState`, `SagaFailedException`,
+`SagaRecoveryRunner`), `SagaRepository` (`org.ledger.db`), `TransferRepository.findByIdempotencyKey`,
+the API surface (`POST /api/v1/transfers/saga`, `GET /api/v1/sagas/{sagaId}`,
+`CreateSagaTransferRequest`/`SagaStepRequest`/`ValidSagaSteps`/`SagaStepsValidator`,
+`SagaResponse`/`SagaStepResponse`, `SagaController`), and the Tomcat pre-accept-ordering wiring
+(`TomcatConnectorGate`, `TomcatConnectorPauseCustomizer` in `org.ledger.infrastructure`). No Flyway
+migration needed — `sagas`/`saga_steps` and their recovery indexes already existed. Added ADR 0008
+recording the chain-of-legs decision. Four new saga ITs plus one standalone startup-wiring IT, all
+under `src/test/java/org/ledger/saga/`. Updated `OpenApiIT` for the two new documented endpoints
+(7 → 9 `/api/v1` paths).
+**Why:** FR-27 through FR-31 (multi-leg transfers, forward/compensate, crash-safe recovery before
+the server accepts traffic) and NFR-4/NFR-10/CON-7. The two endpoints, the `sagas`/`saga_steps`
+schema, and the placeholder `SagaNotFoundException`/`SagaCompensatedException` classes were already
+staged by earlier specs — this is what actually wires them up.
+**How:** `planning/05-openapi.yaml`'s `CreateSagaTransferRequest` describes a flat, fan-out-shaped
+`{type: DEBIT|CREDIT, accountId, amount}` step list that does not fit `transfers`' hard two-account
+`NOT NULL (from_account_id, to_account_id)` shape. Raised this with the project owner; chosen
+resolution (recorded in ADR 0008) is chain-of-legs: the wire schema is kept as-is, but a class-level
+bean-validation constraint (`@ValidSagaSteps`) requires an even-length, alternating `DEBIT`/`CREDIT`
+sequence of equal-amount, different-account pairs — exactly the spec's own `A→B→C` example — and
+`SagaController` reshapes a validated request into `List<SagaLeg>`. Each leg is a complete, ordinary
+transfer, so there is exactly one `SagaStep` implementation (`LegTransferStep`), not the three
+(`DebitAccountStep`/`CreditAccountStep`/`RecordTransferStep`) `planning/03-system-design.md` sketched
+for the fan-out model. `forward()`/`compensate()` both route through `TransferService.execute`
+*unchanged*, keyed by a deterministic `saga:{id}:step:{i}:forward`/`:compensate` idempotency key;
+`LegTransferStep` pre-checks `TransferRepository.findByIdempotencyKey` before calling
+`TransferService.execute`, which is what makes a retried forward/compensate (from
+`SagaOrchestrator.recover`) safe — it finds the leg that already committed instead of double-posting
+or racing `transfers_idempotency_key_uq`. `SagaOrchestrator.execute` persists each `saga_steps` row
+as `IN_PROGRESS` in its own committed transaction *before* calling `forward()` ("persist intent
+before acting"), so an `IN_PROGRESS` row found on restart is ambiguous by construction; `recover()`
+disambiguates it with the same idempotency-key lookup (found = committed = treat as `COMPLETED`; not
+found = never ran = leave alone), then either marks the saga `COMPLETED` (every leg completed) or
+compensates every `COMPLETED` leg in reverse and marks it `COMPENSATED` — never resuming forward
+progress. Every state write checks the current value first, so a second `recover()` pass against an
+already-terminal saga writes nothing (`SagaRecoveryIdempotenceIT` asserts `updated_at` is bit-for-bit
+unchanged). "Recovery runs before the HTTP server accepts traffic" is enforced structurally, not by
+runner ordering: `TomcatConnectorPauseCustomizer` pauses the embedded connector the instant it is
+created (Spring Boot's `ApplicationRunner`s otherwise fire *after* the connector is already accepting
+connections), and `SagaRecoveryRunner` resumes it via `TomcatConnectorGate` only after every
+recoverable saga has been attempted; a fatal error just *listing* recoverable sagas leaves the
+connector deliberately paused forever, rather than silently accepting traffic. `SagaRepository`
+follows `TransferRepository`'s existing convention of taking/returning plain state strings, never the
+`org.ledger.saga` enums — `ArchitectureFitnessTest.db_must_not_depend_on_domain_logic` forbids
+`org.ledger.db` from depending on `org.ledger.saga`. `SagaCrashRecoveryIT` simulates a process kill
+with a test-only hook (`SagaOrchestrator.setStepCommittedHookForTesting`) that throws immediately
+after a chosen step's forward commit, abandoning the in-flight `execute()` call uncaught — there is
+no in-process way to simulate an actual JVM crash inside one Testcontainers-backed test.
+**Issues faced:**
+1. `docs/adr/0008-saga-leg-model.md`, `SagaController`, and the DTOs needed to reference
+   `org.ledger.saga` types (`SagaDefinition`, `SagaLeg`, `SagaResult`), but `SagaDefinition` itself
+   cannot reference `org.ledger.api.dto.CreateSagaTransferRequest` —
+   `ArchitectureFitnessTest.saga_must_not_depend_on_forbidden_modules` forbids `org.ledger.saga` from
+   depending on `org.ledger.api`.
+2. First pass at `SagaOrchestrator.recover` re-wrote `sagas.state`/`saga_steps.state` unconditionally
+   on every call, which would have broken `SagaRecoveryIdempotenceIT`'s "second run touches nothing"
+   assertion even though the *data* ended up correct both times.
+3. `mvn compile` failed with `cannot find symbol: class HashMap` in `SagaOrchestrator` after two
+   edits landed in the wrong order: the Spotless `removeUnusedImports` post-edit hook silently
+   stripped the `java.util.HashMap` import (unused at that moment, since the call site still read
+   `new java.util.HashMap<>()`) before the follow-up edit shortened the call site to `new
+   HashMap<>()`, leaving an unqualified reference with no import.
+4. `AssertJ`'s `catchThrowableOfType` takes `(ThrowingCallable, Class<T>)`, not
+   `(Class<T>, ThrowingCallable)` — first draft of `SagaCompensationIT` had the arguments reversed
+   and failed to compile.
+5. `mvn verify` initially failed one pre-existing test, `OpenApiIT`, which hard-asserts the number of
+   documented `/api/v1` paths.
+**Resolution:**
+1. Kept the pairing/reshaping logic (`CreateSagaTransferRequest` → `List<SagaLeg>`) in
+   `SagaController` instead of `SagaDefinition`, since nothing prevents `org.ledger.api` from
+   depending on `org.ledger.saga` (only the reverse is forbidden) — confirmed no such rule exists in
+   `ArchitectureFitnessTest` before relying on it.
+2. Tracked each step's already-observed state in a local `Map<Integer, SagaStepsRecord>` (mutated as
+   pass one disambiguates `IN_PROGRESS` rows) and a local `sagaState` variable, and guarded every
+   write with an equality check against the target state first. Verified directly:
+   `SagaRecoveryIdempotenceIT` runs `recover()` twice against the same interrupted saga and asserts
+   `updated_at` on both the saga row and every step row is identical across the two runs, plus no new
+   `ledger_entries`.
+3. Re-added the `java.util.HashMap` import after the fact and re-ran `mvn compile`. Lesson: after a
+   PostToolUse formatter hook reformats a file, re-read it (or at least re-check the specific region)
+   before the next dependent edit, rather than assuming the prior edit's context is still exactly as
+   written.
+4. Swapped the argument order to `catchThrowableOfType(() -> sagaOrchestrator.execute(definition),
+   SagaCompensatedException.class)`.
+5. Updated `OpenApiIT` to assert the correct new count (9) and the two new path keys
+   (`/api/v1/transfers/saga`, `/api/v1/sagas/{sagaId}`) — a legitimate test update, not a workaround,
+   since the endpoint count genuinely changed.
+
+Full suite green: `mvn -B verify` — 167 tests, 0 failures, 0 errors. `mvn spotless:check` clean.
+`ArchitectureFitnessTest` (9 rules) passes with real saga code exercised for the first time.
+Invariant check run via the JUnit path (`docker compose`'s Postgres port was held by an unrelated
+container in this environment): `globalEntrySum() == 0` after every saga path exercised by the new
+ITs — happy path, mid-chain compensation, and crash recovery at every step index (0, 1, 2).
+
+---

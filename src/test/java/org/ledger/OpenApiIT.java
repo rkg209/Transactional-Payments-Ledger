@@ -18,7 +18,7 @@ import org.springframework.http.ResponseEntity;
 class OpenApiIT extends AbstractApiIT {
 
   @Test
-  void openApiDocumentListsAllSevenEndpointsAndTheApiKeyScheme() {
+  void openApiDocumentListsAllNineEndpointsAndTheApiKeyScheme() {
     ResponseEntity<Map> response =
         rest.exchange(
             url("/v3/api-docs"),
@@ -30,7 +30,7 @@ class OpenApiIT extends AbstractApiIT {
     Map<String, Object> body = response.getBody();
     Map<String, Object> paths = (Map<String, Object>) body.get("paths");
 
-    // /health is also documented (it is a real, reachable endpoint), so this asserts the seven
+    // /health is also documented (it is a real, reachable endpoint), so this asserts the nine
     // /api/v1 path keys are present -- not that they are the document's only keys.
     assertThat(paths)
         .containsKeys(
@@ -39,9 +39,11 @@ class OpenApiIT extends AbstractApiIT {
             "/api/v1/accounts/{accountId}/balance",
             "/api/v1/transfers",
             "/api/v1/transfers/{transferId}",
+            "/api/v1/transfers/saga",
+            "/api/v1/sagas/{sagaId}",
             "/api/v1/reconciliation/report",
             "/api/v1/reconciliation/run");
-    assertThat(paths.keySet().stream().filter(p -> p.startsWith("/api/v1"))).hasSize(7);
+    assertThat(paths.keySet().stream().filter(p -> p.startsWith("/api/v1"))).hasSize(9);
 
     Map<String, Object> accountsPath = (Map<String, Object>) paths.get("/api/v1/accounts");
     assertThat(accountsPath).containsKeys("get", "post");

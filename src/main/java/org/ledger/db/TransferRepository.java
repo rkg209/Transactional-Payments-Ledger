@@ -46,4 +46,15 @@ public class TransferRepository {
   public Optional<TransfersRecord> findById(UUID id) {
     return Optional.ofNullable(dsl.selectFrom(TRANSFERS).where(TRANSFERS.ID.eq(id)).fetchOne());
   }
+
+  /**
+   * Used by SPEC 0006's saga machinery: a pre-insert lookup by a deterministic per-step key, so a
+   * retried forward/compensate finds the leg that already committed instead of racing the {@code
+   * transfers_idempotency_key_uq} constraint (see {@code LegTransferStep}, {@code
+   * SagaOrchestrator.recover}).
+   */
+  public Optional<TransfersRecord> findByIdempotencyKey(String idempotencyKey) {
+    return Optional.ofNullable(
+        dsl.selectFrom(TRANSFERS).where(TRANSFERS.IDEMPOTENCY_KEY.eq(idempotencyKey)).fetchOne());
+  }
 }
