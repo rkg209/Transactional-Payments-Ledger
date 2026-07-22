@@ -1,6 +1,6 @@
 # SPEC 0007 — Concurrency & crash test harness
 
-Status: implemented
+Status: verified
 Depends on: 0006
 Requirements: FR-32, FR-33, NFR-1, NFR-2, NFR-3, NFR-4, NFR-9, NFR-12, DR-4
 

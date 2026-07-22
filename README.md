@@ -55,7 +55,7 @@ flowchart TB
     subgraph app["Spring Boot process"]
         direction TB
         api["api<br/>controllers, DTOs, validation,<br/>GlobalExceptionHandler"]
-        idem["idempotency<br/>IdempotencyFilter / IdempotencyService"]
+        idem["idempotency<br/>IdempotencyFilter / FingerprintService"]
         transfer["transfer<br/>TransferService<br/>(owns the transaction boundary)"]
         account["account<br/>AccountService"]
         saga["saga<br/>SagaOrchestrator"]

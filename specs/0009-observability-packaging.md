@@ -1,6 +1,6 @@
 # SPEC 0009 — Observability, packaging & deploy
 
-Status: implemented
+Status: verified
 Depends on: 0008
 Requirements: FR-33, NFR-19, NFR-20, NFR-21, NFR-23, DR-1, DR-2, DR-8, DR-11, DR-12
 

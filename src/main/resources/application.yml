@@ -44,6 +44,12 @@ ledger:
     # 50ms * 2^(attempt-1), capped at 800ms; exhaustion maps to 409 CONFLICT_RETRY_EXHAUSTED.
     max-attempts: ${CONCURRENCY_MAX_ATTEMPTS:5}
     backoff-base-ms: ${CONCURRENCY_BACKOFF_BASE_MS:50}
+  idempotency:
+    # SPEC 0010 / ADR 0012. How old an IN_PROGRESS claim must be before a retry may reclaim it as
+    # abandoned by a dead process. Must stay well above the bounded worst case of a guarded request
+    # (max-attempts transactions + backoff capped at 800ms). Safety does not depend on this value:
+    # transfers_idempotency_key_uq rejects a double-post even if a reclaim is wrong.
+    stale-claim-after-ms: ${IDEMPOTENCY_STALE_CLAIM_AFTER_MS:30000}
   reconciliation:
     interval-ms: ${RECONCILIATION_INTERVAL_MS:60000}
     # Off in most test contexts (AbstractPostgresIT sets this false); a background job firing

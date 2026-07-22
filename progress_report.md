@@ -1061,3 +1061,102 @@ concurrency-test` and `./demo.sh` both run clean against a real `docker compose 
 `/actuator/prometheus` confirmed live in the container with every NFR-20 metric present and moving.
 
 ---
+
+## [014] Final verification pass — SPEC 0010 closes the stranded-idempotency-key hole — 2026-07-22
+**Spec:** SPEC 0010 (plus Fix / Refactor items found in the same pass)
+**What:** A full independent audit of the finished project (all ten specs 0000–0009), re-running
+everything from scratch rather than trusting the record, then fixing what it found. Five findings,
+all fixed:
+
+1. **A real bug (liveness):** an idempotency key stranded `IN_PROGRESS` by a crash was poisoned
+   *permanently* — every retry polled, timed out, and got `503 IDEMPOTENCY_TIMEOUT` forever, so one
+   specific payment could never be made again. Closed by new SPEC 0010:
+   `IdempotencyKeyRepository.reclaimStale`, a stale-reclaim attempt in `IdempotencyFilter` after its
+   existing poll deadline, `LedgerIdempotencyProperties` +
+   `ledger.idempotency.stale-claim-after-ms` (default 30 s), a `findByIdempotencyKey` pre-insert
+   lookup in `TransferService.executeOnce`, `StaleClaimRecoveryIT` (4 tests), and ADR 0012.
+2. **FR-41/NFR-25 violated by the gate-commit hook:** it ran `mvn -q -B test` — Surefire only, 25
+   unit/ArchUnit tests. Every test that actually proves this project's claim is a Failsafe `*IT`
+   bound to `verify`, so a commit could land with the entire correctness suite red. Changed to
+   `mvn -q -B verify`.
+3. **`MANUAL_TESTING.md` was stale** — it covered SPEC 0000–0004 only and stated that specs
+   0005–0009 were "still `draft` — nothing to test there yet". Rewritten to cover all eleven specs.
+4. **Spec lifecycle statuses never advanced**: 0000 sat at `approved` and 0002–0009 at
+   `implemented`, none `verified`, despite all passing. `specs/README.md`'s index was worse — it
+   listed every spec as `draft`. Both corrected; the stretch list renumbered 0011–0013 since SPEC
+   0010 is now taken.
+5. **`README.md` architecture diagram referenced a class that does not exist** (`IdempotencyService`;
+   the real collaborators are `IdempotencyFilter` / `FingerprintService`).
+
+**Why:** The user asked for a strong independent verification of whether the project actually works
+as planned before final sign-off. The automated suite being green is necessary but not sufficient —
+it was already 169/169 green *with* finding #1 live in the codebase, because no test covered the
+crash window ADR 0005 had explicitly named and deferred.
+
+**How:** Re-derived the requirement coverage from `planning/01-requirements.md` (41 FR, 26 NFR, 12
+DR, 14 CON) rather than reading the progress report's own claims, then ran everything end to end:
+`mvn -B verify`, `mvn spotless:check`, `make concurrency-test` (both strategies), `make up`,
+`./demo.sh`, and direct SQL against the running stack. Finding #1 came from reading
+`IdempotencyFilter`'s polling loop against ADR 0005's own "accepted costs" section and then checking
+whether SPEC 0007 had discharged the deferral it pointed at — it had not; idempotency-key recovery
+appears nowhere in SPEC 0007's scope.
+
+The SPEC 0010 design deliberately does **not** rest on the staleness threshold for safety. The
+threshold buys liveness; `transfers_idempotency_key_uq` keeps safety, because a wrongly-reclaimed
+key that re-executes takes a unique-constraint violation rather than double-posting. The staleness
+predicate is evaluated in SQL against the database's own clock, so app/DB skew cannot make a live
+claim look abandoned. No sweeper job was built (ADR 0005 had anticipated one): a key nobody retries
+does not need recovering, and a key somebody retries recovers on that retry.
+
+**Issues faced:**
+1. **The first fix was only half a fix, and the test I wrote proved it.** Reclaiming a stranded key
+   handles a crash *before* the transfer commits. It does not handle a crash *after* the commit but
+   before `markCompleted` — which is the exact window ADR 0005 called out. There, re-execution
+   re-inserts a transfer under the same idempotency key, takes a `transfers_idempotency_key_uq`
+   violation, and turns a permanent `503` into a permanent `500`. Strictly no better.
+2. **The concurrent-retry test failed on the first run.** Two retries racing one stranded key: the
+   winner reclaimed and executed, but the loser's `reclaimStale` matched 0 rows and it fell straight
+   through to `503` — even though the winner was milliseconds from writing a response it could have
+   replayed.
+3. **My first draft of `StaleClaimRecoveryIT` would have passed for the wrong reason.** It wrote the
+   `IN_PROGRESS` claim row by hand, which meant hand-computing the request fingerprint. If that
+   disagreed by even one byte with what `FingerprintService` computes from the actual HTTP body, the
+   retry would have been rejected as `IDEMPOTENCY_KEY_REUSE` and never reached the stale-claim path
+   at all — a green test proving nothing.
+4. `sed -i '' 's/^Status: \(approved\|implemented\)$/...'` silently matched nothing when bulk-updating
+   the spec statuses: BSD `sed` does not support `\|` alternation in a basic regex, and reports no
+   error for it.
+
+**Resolution:**
+1. Added the `findByIdempotencyKey` pre-insert lookup to `TransferService.executeOnce`, returning
+   the already-committed transfer instead of re-posting it. This is not a new idea — it is exactly
+   what `LegTransferStep` has always done to make saga recovery re-runnable; it just had never been
+   applied to the one other path that can retry a committed key. `TransferService` is now genuinely
+   idempotent at the service layer rather than relying entirely on the filter above it.
+   `staleClaimWhoseTransferAlreadyCommittedIsNotRePosted` covers it.
+2. On a losing reclaim the filter now extends its deadline once and continues polling instead of
+   giving up, so the loser replays the winner's response. Guarded by a `staleReclaimAttempted` flag
+   so it is one extra window, not an unbounded loop.
+3. Rewrote the test to stage the crash at the real observable boundary: `@SpyBean` on
+   `IdempotencyKeyRepository` suppressing the terminal write once, so the row left behind is the one
+   a killed process actually leaves — real fingerprint, computed by the real filter from the real
+   request bytes. Both crash windows are now covered separately because they fail differently.
+4. Re-ran with `sed -E`. Lesson: a bulk `sed` that reports success is not evidence it changed
+   anything — diff or re-grep afterwards.
+
+**Result:** `mvn -B verify` — **198 tests (25 Surefire + 173 Failsafe), 0 failures, 0 errors**;
+`mvn spotless:check` clean. `make concurrency-test` re-run independently: both strategies PASS —
+pessimistic 10,084 requests / 7,700 unique / 2,360 duplicates in 13s, optimistic 10,739 / 7,700 /
+2,360 in 26s, both with 0 double-charges, money delta 0, Σ(entries) = 0, 12/12 sagas recovered
+terminal, drift genesis-only. Live verification against `make up`: `./demo.sh` exit 0, the SPEC 0010
+fix confirmed by hand (5-minute-old claim → `201` and exactly one transfer; fresh claim → `503`),
+`global_sum = 0`, per-account drift confined to hand-seeded accounts, the append-only trigger
+rejecting `UPDATE`, `reconciliation_global_sum` reading 0 on `/actuator/prometheus`, and zero
+bind-variable DEBUG leakage (NFR-23).
+
+**Lesson:** the most valuable finding in this pass came from reading an ADR's own "accepted costs"
+section and then checking whether the spec it deferred the work to had actually done it. A deferral
+recorded honestly is still a deferral; nothing in a green test suite will ever remind you it is
+outstanding, because the thing it defers is by definition the thing nobody wrote a test for.
+
+---

@@ -1,6 +1,6 @@
 # SPEC 0004 — Concurrency control (BOTH strategies)
 
-Status: implemented
+Status: verified
 Depends on: 0003
 Requirements: FR-19, FR-20, FR-21, FR-22, FR-23, NFR-3, NFR-14
 

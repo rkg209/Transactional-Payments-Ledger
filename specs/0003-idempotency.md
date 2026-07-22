@@ -1,6 +1,6 @@
 # SPEC 0003 — Idempotency
 
-Status: implemented
+Status: verified
 Depends on: 0002
 Requirements: FR-14, FR-15, FR-16, FR-17, FR-18, NFR-5
 

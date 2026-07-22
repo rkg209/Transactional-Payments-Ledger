@@ -128,6 +128,21 @@ public class TransferService {
       long amountMinor,
       String currency,
       String idempotencyKey) {
+    // SPEC 0010 / ADR 0012. A transfer already committed under this key is returned as-is rather
+    // than re-posted. Normally unreachable -- IdempotencyFilter resolves a repeat key long before
+    // it reaches here -- but it is exactly the state a process that died between the transfer's
+    // COMMIT and the filter's markCompleted leaves behind. Without this, reclaiming that stranded
+    // key would re-run the insert, take a transfers_idempotency_key_uq violation, and 500 on every
+    // retry forever. This is the same pre-insert lookup LegTransferStep already relies on to make
+    // saga recovery re-runnable, applied to the one other path that can retry a committed key.
+    if (idempotencyKey != null) {
+      TransfersRecord committed =
+          transferRepository.findByIdempotencyKey(idempotencyKey).orElse(null);
+      if (committed != null) {
+        return toResult(committed);
+      }
+    }
+
     if (fromAccountId.equals(toAccountId)) {
       throw new SameAccountException();
     }

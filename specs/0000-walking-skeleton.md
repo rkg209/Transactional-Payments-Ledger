@@ -1,6 +1,6 @@
 # SPEC 0000 — Walking skeleton & CI
 
-Status: approved
+Status: verified
 Depends on: none
 Requirements: FR-10, NFR-13, NFR-17, CON-1, CON-2, CON-3, CON-9, CON-10, CON-11, DR-1, DR-2, DR-3, DR-6, DR-9
 

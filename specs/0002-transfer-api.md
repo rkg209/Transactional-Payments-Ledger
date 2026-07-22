@@ -1,6 +1,6 @@
 # SPEC 0002 — Transfer API
 
-Status: implemented
+Status: verified
 Depends on: 0001
 Requirements: FR-7, FR-8, FR-9, FR-12, FR-13, NFR-22, DR-8
 

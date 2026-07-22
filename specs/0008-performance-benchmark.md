@@ -1,6 +1,6 @@
 # SPEC 0008 — Performance benchmark
 
-Status: implemented
+Status: verified
 Depends on: 0007
 Requirements: FR-34, FR-35, NFR-6, NFR-7, NFR-8
 

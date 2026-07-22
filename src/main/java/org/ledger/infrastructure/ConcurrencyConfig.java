@@ -80,4 +80,11 @@ public class ConcurrencyConfig {
       @Value("${ledger.concurrency.backoff-base-ms:50}") long backoffBaseMs) {
     return new LedgerConcurrencyProperties(maxAttempts, backoffBaseMs);
   }
+
+  /** SPEC 0010 — see {@link LedgerIdempotencyProperties} for why the default is 30 s. */
+  @Bean
+  public LedgerIdempotencyProperties ledgerIdempotencyProperties(
+      @Value("${ledger.idempotency.stale-claim-after-ms:30000}") long staleClaimAfterMs) {
+    return new LedgerIdempotencyProperties(java.time.Duration.ofMillis(staleClaimAfterMs));
+  }
 }

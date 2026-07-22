@@ -13,6 +13,7 @@ import org.ledger.api.error.ErrorCode;
 import org.ledger.api.error.ErrorResponseWriter;
 import org.ledger.db.IdempotencyKeyRepository;
 import org.ledger.db.generated.tables.records.IdempotencyKeysRecord;
+import org.ledger.infrastructure.LedgerIdempotencyProperties;
 import org.springframework.http.HttpMethod;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -43,11 +44,15 @@ public class IdempotencyFilter extends OncePerRequestFilter {
 
   private final IdempotencyKeyRepository repository;
   private final FingerprintService fingerprintService;
+  private final LedgerIdempotencyProperties idempotencyProperties;
 
   public IdempotencyFilter(
-      IdempotencyKeyRepository repository, FingerprintService fingerprintService) {
+      IdempotencyKeyRepository repository,
+      FingerprintService fingerprintService,
+      LedgerIdempotencyProperties idempotencyProperties) {
     this.repository = repository;
     this.fingerprintService = fingerprintService;
+    this.idempotencyProperties = idempotencyProperties;
   }
 
   @Override
@@ -72,6 +77,7 @@ public class IdempotencyFilter extends OncePerRequestFilter {
         new CachedBodyHttpServletRequest(request, bodyBytes);
 
     long deadline = System.currentTimeMillis() + POLL_TIMEOUT_MS;
+    boolean staleReclaimAttempted = false;
     while (true) {
       if (repository.tryClaim(key, fingerprint)) {
         execute(key, wrappedRequest, response, filterChain);
@@ -103,6 +109,27 @@ public class IdempotencyFilter extends OncePerRequestFilter {
 
       // IN_PROGRESS: poll for the winner to resolve.
       if (System.currentTimeMillis() >= deadline) {
+        // SPEC 0010 / ADR 0012. The "winner" may not be running at all: a process that died
+        // between tryClaim and its terminal markCompleted/markFailed leaves this row IN_PROGRESS
+        // with nobody left to resolve it. Without this, that key is poisoned permanently -- every
+        // future retry lands right here and 503s, so one specific payment can never be made again.
+        // Only a claim older than staleClaimAfter is reclaimable, and the predicate is evaluated
+        // in SQL so a genuine in-flight request cannot be stolen out from under itself.
+        if (!staleReclaimAttempted) {
+          staleReclaimAttempted = true;
+          if (repository.reclaimStale(key, fingerprint, idempotencyProperties.staleClaimAfter())) {
+            execute(key, wrappedRequest, response, filterChain);
+            return;
+          }
+          // 0 rows updated means one of two things, and both are worth one more poll window rather
+          // than an immediate 503: either the claim is not stale yet (a genuine in-flight twin), or
+          // a concurrent retry just won the reclaim and is executing now. In the second case the
+          // winner is about to write a response this request can replay, so giving up here would
+          // 503 a caller whose answer is seconds away.
+          deadline = System.currentTimeMillis() + POLL_TIMEOUT_MS;
+          sleep();
+          continue;
+        }
         ErrorResponseWriter.write(response, ErrorCode.IDEMPOTENCY_TIMEOUT, Map.of("key", key));
         return;
       }
