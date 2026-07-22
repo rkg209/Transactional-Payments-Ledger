@@ -829,3 +829,80 @@ container in this environment): `globalEntrySum() == 0` after every saga path ex
 ITs — happy path, mid-chain compensation, and crash recovery at every step index (0, 1, 2).
 
 ---
+
+## [011] SPEC 0007 — Concurrency & crash harness — 2026-07-22
+
+**Spec:** SPEC 0007
+
+**What:** Built the headline driver in `src/test/java/org/ledger/harness/`
+(`AbstractConcurrencyChaosHarness`, `HarnessWorkload`, `HarnessResults`,
+`Optimistic/PessimisticConcurrencyChaosHarness`) plus `src/test/java/org/ledger/saga/ChaosSagaPhase.java`
+(package `org.ledger.saga`, to reach `SagaOrchestrator.setStepCommittedHookForTesting`). Named
+`*ConcurrencyChaosHarness` deliberately so Failsafe's default `*IT*` includes skip it in `make test`.
+Replaced the placeholder `make concurrency-test` target and added `make concurrency-test-x10`. Also
+fixed a real bug found while running it: `IdempotencyFilter.execute()` only routed `>=500` responses
+to `FAILED`; `409 CONFLICT_RETRY_EXHAUSTED` (a transient contention signal, not a deterministic
+request outcome) fell into the `>=4xx` branch and got permanently cached as `COMPLETED`, so
+`replay()` would forever re-serve the stale 409 as a fake "200 replayed success" and that transfer
+could never happen. Fixed to route 409 to `FAILED` alongside 5xx, documented in new
+`docs/adr/0009-retry-exhaustion-is-not-a-terminal-idempotency-outcome.md`.
+
+**Why:** FR-32/FR-33/NFR-1..4/NFR-9/NFR-12/DR-4 — prove the headline claim (10,000 concurrent
+transfers, ~30% duplicates, 0 double-charges, 0 money created/destroyed, Σ(entries)=0) reproducibly,
+in one command, on a clean machine, for both concurrency strategies.
+
+**How:** Phase 0 seeds 4 hot accounts (12 ordered pairs) plus 2 min_balance-floor accounts, all
+funded through real transfers (`fundFromGenesis`) so `balance == Σentries` holds for everything but
+genesis; floor accounts get `min_balance` raised via a direct `UPDATE` afterward (not via
+`seedAccountState`, which would have introduced a second source of reconciliation drift beyond
+genesis and broken Phase 3's "drift is genesis-only" assertion). Phase 1 fires 7,700 logical
+transfers over real HTTP (`TestRestTemplate`, virtual-thread-per-task executor, 256-permit
+semaphore, one `CountDownLatch` start gate), ~30% get a byte-identical duplicate twin fired
+concurrently under the same key (deterministic `Random(20260722L)` seed), for ~10,060 wire requests;
+409/503/500 responses are treated as client back-pressure and re-sent with the same key (bounded 20
+attempts, jittered backoff) exactly like a real client. Phase 2 crashes 12 sagas (4 per step index
+0..2) concurrently via `ChaosSagaPhase`, which uses a `ThreadLocal` instead of the plan's
+originally-suggested `ctx.sagaId()`-keyed map: a saga's id does not exist until `execute()` is
+already running on that thread, so it cannot be known in advance, but the hook always fires
+synchronously on the same thread that called `execute()`, making thread-scoped state equally safe
+without needing the id ahead of time. Phase 3 re-derives every invariant independently from the
+database (not from the HTTP counters). Phase 4 prints the FR-33 table on both success and failure
+via `try`/`finally`.
+
+**Issues faced:**
+1. First Optimistic run's storm produced two hard failures: `500 INTERNAL_ERROR` from Postgres
+   ("new multixact has more than one updating member") on `OptimisticStrategy`'s version-CAS
+   `UPDATE` under this harness's contention level — a rare, genuinely transient Postgres condition
+   `TransferService.isRetryable()` doesn't classify as retryable internally.
+2. After treating 500 as harness-level retryable (test-only change), the Optimistic run still came
+   up exactly one transfer short (`uniqueApplied` 7699 instead of 7700) with 0 hard failures reported
+   and money conservation still holding — the `IdempotencyFilter` bug described above: a claimant
+   that exhausted `TransferService`'s internal retry budget (409) got its key permanently marked
+   `COMPLETED` with the error snapshot, so every subsequent retry of that key (including the
+   harness's own) replayed the stale 409 as a fake 200 success and the transfer never actually
+   happened.
+3. First `mvn compile` failed: a Javadoc block literally containing `**/IT*.java` terminated the
+   comment early at the embedded `*/`.
+
+**Resolution:**
+1. Documented as a genuine (non-injected) harness finding rather than silently working around it;
+   extended the harness's own client-retry classification to treat 500 as retryable too, since
+   `IdempotencyFilter` already marks a 500's key `FAILED` and allows same-key reclaim — a resilient
+   real client retrying on 500 is realistic, not a test-only carve-out.
+2. Asked the project owner how to handle it (production fix vs. harness-only workaround vs.
+   weakening the assertion) rather than deciding unilaterally, since it's a real correctness gap in
+   already-accepted ADR 0005's design, not this spec's own scope. Chose to fix `IdempotencyFilter`:
+   409 now routes to `FAILED` alongside 5xx, recorded in ADR 0009. Verified via the mandated
+   sabotage step (temporarily forcing `IdempotencyFilter` to skip `tryClaim`, and separately
+   `injectDrift` before Phase 3) that the harness actually goes red and prints a diagnosable table
+   in both cases, then reverted both.
+3. Rewrote the Javadoc to describe the glob patterns in prose instead of literal path syntax.
+
+Full suite green: `mvn -B verify` — 167 tests unchanged (the two harness classes are correctly
+excluded by Failsafe's default includes). `make concurrency-test`: both strategies PASS —
+pessimistic ~14-15s wall clock, optimistic ~29-35s, both far under the 10-minute budget (NFR-9).
+`make concurrency-test-x10`: 10/10 consecutive passes, 20/20 individual strategy runs green.
+Invariant check across all 20 runs: `global_sum == 0` every run; `accountsDrifted == 1` every run,
+always genesis only, at exactly `GENESIS_STARTING_CAPITAL`.
+
+---

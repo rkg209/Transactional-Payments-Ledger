@@ -120,7 +120,14 @@ public class IdempotencyFilter extends OncePerRequestFilter {
     ContentCachingResponseWrapper wrappedResponse = new ContentCachingResponseWrapper(response);
     try {
       filterChain.doFilter(wrappedRequest, wrappedResponse);
-      if (wrappedResponse.getStatus() >= 500) {
+      // 409 CONFLICT_RETRY_EXHAUSTED is a 4xx but, unlike INSUFFICIENT_FUNDS or
+      // SAME_ACCOUNT_TRANSFER, it is not a deterministic property of the request -- it is
+      // TransferService reporting that it could not win its own internal lock/CAS race within its
+      // retry budget this time. Caching it as COMPLETED would freeze that outcome forever: replay()
+      // always returns 200, so every future retry with this key would silently replay the stale 409
+      // rather than getting a real chance to succeed once contention subsides (ADR 0009).
+      if (wrappedResponse.getStatus() >= 500
+          || wrappedResponse.getStatus() == HttpServletResponse.SC_CONFLICT) {
         repository.markFailed(key);
       } else {
         String snapshot =

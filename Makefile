@@ -12,21 +12,12 @@ test: ## Unit + integration tests (JUnit 5 + Testcontainers, REAL Postgres)
 
 verify: test ## Alias for test
 
-concurrency-test: ## THE HEADLINE: 10k concurrent transfers, ~30% duplicates
-	@echo ""
-	@echo "  ┌──────────────────────────────────────────────────────────────┐"
-	@echo "  │  concurrency-test is not implemented yet.                    │"
-	@echo "  │                                                              │"
-	@echo "  │  It lands with SPEC 0007, and it will assert:                │"
-	@echo "  │    • 10,000 concurrent transfers, ~30% duplicates            │"
-	@echo "  │    • 0 double-charges                                        │"
-	@echo "  │    • 0 money created or destroyed                            │"
-	@echo "  │    • Σ(ledger_entries) = 0                                   │"
-	@echo "  │                                                              │"
-	@echo "  │  Specs 0001–0006 must land first. See specs/README.md.       │"
-	@echo "  └──────────────────────────────────────────────────────────────┘"
-	@echo ""
-	@exit 1
+concurrency-test: ## THE HEADLINE: 10k concurrent transfers, ~30% duplicates, saga crashes
+	mvn -B verify -Dit.test='*ConcurrencyChaosHarness' \
+		-Dtest=none -Dsurefire.failIfNoSpecifiedTests=false
+
+concurrency-test-x10: ## Repeatability gate (NFR-1): 10 consecutive runs, 10 passes
+	@for i in $$(seq 1 10); do echo "── run $$i/10 ──"; $(MAKE) concurrency-test || exit 1; done
 
 bench: ## JMH benchmarks: optimistic vs pessimistic, RC vs SERIALIZABLE
 	@echo ""
