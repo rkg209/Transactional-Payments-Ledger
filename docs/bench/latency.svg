@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="460" viewBox="0 0 760 460">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="380" y="20" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold">p99 transfer latency by contention (SPEC 0008)</text>
+<line x1="70" y1="34" x2="70" y2="404" stroke="#333"/>
+<line x1="70" y1="404" x2="570" y2="404" stroke="#333"/>
+<line x1="70" y1="404" x2="570" y2="404" stroke="#eee"/>
+<text x="64" y="407" font-family="sans-serif" font-size="10" text-anchor="end">0 ms</text>
+<line x1="70" y1="311" x2="570" y2="311" stroke="#eee"/>
+<text x="64" y="314" font-family="sans-serif" font-size="10" text-anchor="end">202 ms</text>
+<line x1="70" y1="219" x2="570" y2="219" stroke="#eee"/>
+<text x="64" y="222" font-family="sans-serif" font-size="10" text-anchor="end">404 ms</text>
+<line x1="70" y1="126" x2="570" y2="126" stroke="#eee"/>
+<text x="64" y="129" font-family="sans-serif" font-size="10" text-anchor="end">605 ms</text>
+<line x1="70" y1="34" x2="570" y2="34" stroke="#eee"/>
+<text x="64" y="37" font-family="sans-serif" font-size="10" text-anchor="end">807 ms</text>
+<text x="70" y="420" font-family="sans-serif" font-size="10" text-anchor="middle">1</text>
+<text x="153" y="420" font-family="sans-serif" font-size="10" text-anchor="middle">2</text>
+<text x="236" y="420" font-family="sans-serif" font-size="10" text-anchor="middle">4</text>
+<text x="320" y="420" font-family="sans-serif" font-size="10" text-anchor="middle">8</text>
+<text x="403" y="420" font-family="sans-serif" font-size="10" text-anchor="middle">16</text>
+<text x="486" y="420" font-family="sans-serif" font-size="10" text-anchor="middle">32</text>
+<text x="570" y="420" font-family="sans-serif" font-size="10" text-anchor="middle">64</text>
+<text x="320" y="450" font-family="sans-serif" font-size="11" text-anchor="middle">threads per hot account</text>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="70,401 153,324 236,315 320,223 403,225 486,228 570,55"/>
+<circle cx="70" cy="401" r="3" fill="#2563eb"/>
+<circle cx="153" cy="324" r="3" fill="#2563eb"/>
+<circle cx="236" cy="315" r="3" fill="#2563eb"/>
+<circle cx="320" cy="223" r="3" fill="#2563eb"/>
+<circle cx="403" cy="225" r="3" fill="#2563eb"/>
+<circle cx="486" cy="228" r="3" fill="#2563eb"/>
+<circle cx="570" cy="55" r="3" fill="#2563eb"/>
+<rect x="590" y="34" width="10" height="10" fill="#2563eb"/>
+<text x="604" y="43" font-family="sans-serif" font-size="11">optimistic read_committed</text>
+<polyline fill="none" stroke="#dc2626" stroke-width="2" points="70,401 153,397 236,400 320,396 403,388 486,132 570,202"/>
+<circle cx="70" cy="401" r="3" fill="#dc2626"/>
+<circle cx="153" cy="397" r="3" fill="#dc2626"/>
+<circle cx="236" cy="400" r="3" fill="#dc2626"/>
+<circle cx="320" cy="396" r="3" fill="#dc2626"/>
+<circle cx="403" cy="388" r="3" fill="#dc2626"/>
+<circle cx="486" cy="132" r="3" fill="#dc2626"/>
+<circle cx="570" cy="202" r="3" fill="#dc2626"/>
+<rect x="590" y="52" width="10" height="10" fill="#dc2626"/>
+<text x="604" y="61" font-family="sans-serif" font-size="11">pessimistic read_committed</text>
+<polyline fill="none" stroke="#93c5fd" stroke-width="2" points="70,395 153,376 236,232 320,224 403,221 486,42 570,34"/>
+<circle cx="70" cy="395" r="3" fill="#93c5fd"/>
+<circle cx="153" cy="376" r="3" fill="#93c5fd"/>
+<circle cx="236" cy="232" r="3" fill="#93c5fd"/>
+<circle cx="320" cy="224" r="3" fill="#93c5fd"/>
+<circle cx="403" cy="221" r="3" fill="#93c5fd"/>
+<circle cx="486" cy="42" r="3" fill="#93c5fd"/>
+<circle cx="570" cy="34" r="3" fill="#93c5fd"/>
+<rect x="590" y="70" width="10" height="10" fill="#93c5fd"/>
+<text x="604" y="79" font-family="sans-serif" font-size="11">optimistic serializable</text>
+<polyline fill="none" stroke="#fca5a5" stroke-width="2" points="70,393 153,374 236,232 320,228 403,218 486,218 570,37"/>
+<circle cx="70" cy="393" r="3" fill="#fca5a5"/>
+<circle cx="153" cy="374" r="3" fill="#fca5a5"/>
+<circle cx="236" cy="232" r="3" fill="#fca5a5"/>
+<circle cx="320" cy="228" r="3" fill="#fca5a5"/>
+<circle cx="403" cy="218" r="3" fill="#fca5a5"/>
+<circle cx="486" cy="218" r="3" fill="#fca5a5"/>
+<circle cx="570" cy="37" r="3" fill="#fca5a5"/>
+<rect x="590" y="88" width="10" height="10" fill="#fca5a5"/>
+<text x="604" y="97" font-family="sans-serif" font-size="11">pessimistic serializable</text>
+<line x1="70" y1="34" x2="70" y2="404" stroke="#16a34a" stroke-dasharray="4"/>
+<text x="74" y="46" font-family="sans-serif" font-size="10" fill="#16a34a">crossover=1</text>
+</svg>

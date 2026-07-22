@@ -14,8 +14,10 @@ spring:
     username: ${SPRING_DATASOURCE_USERNAME:ledger}
     password: ${SPRING_DATASOURCE_PASSWORD:ledger}
     hikari:
-      # Connection-pool size bounds real concurrency against the database. It is
-      # tuned deliberately in SPEC 0008 against the benchmark, not guessed here.
+      # Connection-pool size bounds real concurrency against the database. SPEC 0008's benchmark
+      # deliberately fixed the pool at 96 across every matrix cell to remove pool contention as a
+      # variable (ADR 0010), so this default is NOT backed by a dedicated pool-size sweep -- left
+      # at its prior value pending one.
       maximum-pool-size: ${DB_POOL_SIZE:20}
       # HikariCP must never silently retry a failed transaction: a retried
       # transfer that the application does not know about could double-post.
@@ -30,8 +32,11 @@ spring:
     sql-dialect: postgres
 
 ledger:
-  # Selected at startup. Both strategies are implemented and benchmarked
-  # (SPEC 0004 / 0008); neither is a default we settled for.
+  # Selected at startup; both strategies remain fully implemented and selectable. SPEC 0008's
+  # benchmark (ADR 0010) confirmed these as the production defaults: pessimistic wins or ties at
+  # every contention level measured under read_committed, and serializable costs pessimistic
+  # 61.4% average throughput vs 0.3% for optimistic -- not worth paying for a write-skew hazard
+  # this access pattern does not have (ADR 0001).
   concurrency-strategy: ${CONCURRENCY_STRATEGY:pessimistic}
   isolation-level: ${ISOLATION_LEVEL:read_committed}
   concurrency:

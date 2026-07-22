@@ -1,4 +1,4 @@
-.PHONY: help run test verify concurrency-test bench format check up down clean
+.PHONY: help run test verify concurrency-test bench bench-quick format check up down clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -19,13 +19,11 @@ concurrency-test: ## THE HEADLINE: 10k concurrent transfers, ~30% duplicates, sa
 concurrency-test-x10: ## Repeatability gate (NFR-1): 10 consecutive runs, 10 passes
 	@for i in $$(seq 1 10); do echo "── run $$i/10 ──"; $(MAKE) concurrency-test || exit 1; done
 
-bench: ## JMH benchmarks: optimistic vs pessimistic, RC vs SERIALIZABLE
-	@echo ""
-	@echo "  bench is not implemented yet — it lands with SPEC 0008."
-	@echo "  It will measure transfers/sec and p50/p99 across the 2x2 matrix"
-	@echo "  and identify the optimistic/pessimistic contention crossover."
-	@echo ""
-	@exit 1
+bench: ## JMH benchmarks: full 2x2 matrix x 7 contention levels (many minutes)
+	mvn -B -P bench test-compile exec:exec
+
+bench-quick: ## Fast smoke: 3 contention levels, short bursts -- for iterating on the harness
+	mvn -B -P bench -Dbench.profile=quick test-compile exec:exec
 
 format: ## Apply Spotless formatting
 	mvn -B spotless:apply

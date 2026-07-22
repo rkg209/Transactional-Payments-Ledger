@@ -906,3 +906,94 @@ Invariant check across all 20 runs: `global_sum == 0` every run; `accountsDrifte
 always genesis only, at exactly `GENESIS_STARTING_CAPITAL`.
 
 ---
+
+## [012] Performance benchmark: optimistic vs pessimistic, RC vs SERIALIZABLE — 2026-07-22
+**Spec:** SPEC 0008
+**What:** New `org.ledger.bench` package (`src/test/java`): `TransferBenchmark` (JMH,
+`SingleShotTime`, `@Fork(0)`), `BenchContext` (one Spring context per (strategy, isolation) cell,
+cached across contention levels), `BenchFixture` (hot-account seeding via real transfers, mirroring
+`AbstractPostgresIT`), `LatencyRecorder`, `BenchmarkSink`, `BenchmarkReport` (pure formatter —
+crossover detection, SERIALIZABLE cost %, claim sentence, aggregation across JMH's 3 measurement
+iterations), `SvgLatencyPlot` (hand-rolled SVG, no charting library), and `BenchRunner` (the
+`exec:exec` entry point). `pom.xml` gained a `bench` Maven profile (JMH deps test-scoped, an
+annotation-processor execution for the JMH harness, `exec-maven-plugin` wired to `BenchRunner`).
+`Makefile`'s `bench` target is implemented; added `bench-quick` (3 contention levels, short bursts)
+for fast iteration. `docs/adr/0010-concurrency-strategy-and-isolation-by-measurement.md` records the
+production defaults. `application.yml` comments updated to cite ADR 0010 (`concurrency-strategy` /
+`isolation-level` confirmed, not changed; `DB_POOL_SIZE` left as-is, explicitly not backed by this
+run). `docs/bench/{results.md,results.csv,latency.svg}` committed. `BenchmarkReportTest` (plain
+JUnit) covers crossover detection (including the "must hold for every higher level, not just one"
+and no-crossover cases), the SERIALIZABLE cost average, and the multi-iteration aggregation.
+
+**Why:** FR-34/FR-35/NFR-6/NFR-7/NFR-8 — three decisions ADR 0001 and ADR 0006 deliberately left
+open (`ConcurrencyStrategy` default, isolation-level default, Hikari pool size) were blocked on this
+spec's numbers, not taste. `make bench` exited 1 with a placeholder before this.
+
+**How:** Load is driven at `TransferService.execute(...)` directly, not over HTTP, so the matrix
+measures locking/isolation cost, not Tomcat + `IdempotencyFilter` overhead. Each JMH invocation runs
+`contention` virtual threads against one hot-account pair, `WARMUP_TRANSFERS_PER_THREAD` unrecorded
+then a `CyclicBarrier` phase change into `MEASURED_TRANSFERS_PER_THREAD` recorded — JMH-level warmup
+is `@Warmup(iterations = 0)` on purpose, since JMH gives a benchmark method no way to know it's in a
+warmup iteration. `@TearDown(Level.Trial)` re-derives `balance == Σentries` for the two accounts the
+trial actually wrote plus the global entry sum, and throws (failing the whole benchmark) on drift —
+a throughput number from a run that lost money is worthless. Full sweep: {optimistic, pessimistic} ×
+{read_committed, serializable} × {1,2,4,8,16,32,64} contention, 3 measurement iterations each, run
+against real Testcontainers Postgres (~7:46 wall clock on the author's machine).
+
+**Result:** Pessimistic wins or ties at *every* contention level measured under READ COMMITTED
+(370→643 transfers/sec across the sweep vs optimistic's 233→337, with zero retry-exhausted failures
+against optimistic's hundreds at high contention) — the ADR 0006-predicted low-contention optimistic
+advantage did not appear in this workload. SERIALIZABLE's cost is asymmetric: 0.3% for optimistic
+(noise), 61.4% for pessimistic — `SELECT ... FOR UPDATE` under SERIALIZABLE pays PostgreSQL's SSI
+predicate-lock overhead on top of the row lock it already holds. Production defaults
+(`concurrency-strategy=pessimistic`, `isolation-level=read_committed`) were *confirmed* by this data,
+not changed — both were already the `application.yml` defaults. Full writeup: ADR 0010.
+
+**Issues faced:**
+1. First `make bench-quick` run: JMH's own `@Fork(1)` spawns a nested JVM that does not inherit
+   `-Dapi.version=1.44` / `-Dnet.bytebuddy.experimental=true` from the `exec:exec`-launched JVM,
+   so Testcontainers failed in the forked JVM with a misleading "no Docker environment" — exactly
+   the risk flagged in the implementation plan.
+2. After fixing (1): every `BenchContext` boot connected to `localhost:5432` (the dev/prod default)
+   instead of the Testcontainers Postgres, and failed outright since nothing was listening there.
+3. After fixing (2): `application.yml`'s `org.jooq.tools.LoggerListener: DEBUG` logged every bind
+   variable of every statement on every virtual thread during the burst — tens of thousands of log
+   lines per trial, with the shared-appender I/O measurably dominating latency rather than the lock
+   contention the benchmark exists to measure.
+4. After fixing (3) and running the full sweep once: `docs/bench/results.md` showed 3 rows per
+   matrix cell instead of 1, with visibly inconsistent numbers between the 3 rows for the same
+   (strategy, isolation, contention) combination.
+
+**Resolution:**
+1. Changed `TransferBenchmark` to `@Fork(0)` and `BenchRunner`'s `OptionsBuilder` to `.forks(0)`:
+   JMH runs embedded in the JVM `exec:exec` already controls, so the Docker API pin reaches the JVM
+   that actually starts `BenchPostgres`. No second fork is needed since this JVM is already
+   dedicated to the benchmark.
+2. Root-caused to `SpringApplicationBuilder.properties(...)` setting Boot's lowest-precedence
+   *default* properties, which never win against `application.yml`'s already-concrete
+   `spring.datasource.url` (it has a hardcoded fallback, not an unset key). Switched
+   `BenchContext.boot` to an `ApplicationContextInitializer` that `addFirst`s a `MapPropertySource`
+   on the environment, making the override the highest-precedence source unconditionally.
+3. Root-caused to Boot's `LoggingApplicationListener` reading `logging.level.*` once, early
+   (`ApplicationEnvironmentPreparedEvent`), before any `ApplicationContextInitializer` runs — so a
+   one-time programmatic silence at process start got overwritten the moment the first Spring
+   context booted. Fixed by calling the Logback API directly (`root` and
+   `org.jooq.tools.LoggerListener` both set to WARN) *after every* `BenchContext.boot()` call, not
+   once at process start, and by setting the named logger explicitly (an explicit level on a named
+   logger wins over an inherited root level, so silencing root alone left this one logger at DEBUG).
+4. Root-caused to `TransferBenchmark`'s `@Measurement(iterations = 3)`: `BenchmarkSink` recorded one
+   `Cell` per JMH iteration, and `BenchmarkReport`'s internal `Map<Integer, Double>` (keyed by
+   contention level) silently kept only the *last* of the 3 rows on each write — two-thirds of every
+   cell's data was discarded with no error, exactly the "one piece of bench logic that can silently
+   produce a wrong headline number" the class's own Javadoc warned about. Added
+   `BenchmarkReport.aggregateByCell` (median throughput/latency, summed counts) called from `write()`
+   before any rendering or crossover/cost computation, with two new `BenchmarkReportTest` cases
+   covering the aggregation. Reran the full sweep after the fix; the corrected results are the ones
+   reported above and in ADR 0010.
+
+`mvn -B verify` unaffected: `TransferBenchmark` (no `*IT`/`*Test` suffix) is picked up by neither
+Surefire nor Failsafe; `BenchmarkReportTest` runs under `mvn test`. `make bench-quick` and
+`make bench` both produce `docs/bench/{results.md,results.csv,latency.svg}` with the invariant gate
+passing on every trial.
+
+---

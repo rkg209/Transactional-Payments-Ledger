@@ -51,6 +51,13 @@
     <!-- Not in the Spring Boot 3.3.x BOM; pinned to the 2.6.x line, which
          tracks Boot 3.3.x / springdoc's own compatibility matrix. -->
     <springdoc-openapi.version>2.6.0</springdoc-openapi.version>
+
+    <!-- SPEC 0008 — JMH shell for TransferBenchmark; see the `bench` profile below. -->
+    <jmh.version>1.37</jmh.version>
+    <exec-maven-plugin.version>3.5.0</exec-maven-plugin.version>
+    <!-- "full" (the make-bench default) or "quick" (make bench-quick): read at runtime by
+         BenchRunner/TransferBenchmark to shrink the contention sweep and burst size. -->
+    <bench.profile>full</bench.profile>
   </properties>
 
   <dependencies>
@@ -150,6 +157,21 @@
       <artifactId>spring-security-test</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!-- SPEC 0008 — JMH shell for TransferBenchmark (org.ledger.bench). Test-scoped: JMH must
+         never enter the production runtime classpath. -->
+    <dependency>
+      <groupId>org.openjdk.jmh</groupId>
+      <artifactId>jmh-core</artifactId>
+      <version>${jmh.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.openjdk.jmh</groupId>
+      <artifactId>jmh-generator-annprocess</artifactId>
+      <version>${jmh.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <dependencyManagement>
@@ -238,6 +260,33 @@
             <net.bytebuddy.experimental>true</net.bytebuddy.experimental>
           </systemPropertyVariables>
         </configuration>
+      </plugin>
+
+      <!-- SPEC 0008: generates TransferBenchmark's JMH harness (org.ledger.bench) into test
+           sources. Specifying annotationProcessorPaths disables javac's automatic processor
+           classpath scanning, which is fine here — this project has no other annotation
+           processor on the test classpath (Lombok-free). -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-testCompile</id>
+            <phase>test-compile</phase>
+            <goals>
+              <goal>testCompile</goal>
+            </goals>
+            <configuration>
+              <annotationProcessorPaths>
+                <path>
+                  <groupId>org.openjdk.jmh</groupId>
+                  <artifactId>jmh-generator-annprocess</artifactId>
+                  <version>${jmh.version}</version>
+                </path>
+              </annotationProcessorPaths>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
 
       <!--
@@ -342,4 +391,42 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!--
+      SPEC 0008. Kept out of the default build (`mvn verify` never activates this profile) so JMH
+      never runs as a side effect of the ordinary test suite — the full sweep runs for minutes.
+
+      `make bench` / `make bench-quick` invoke this via:
+        mvn -B -P bench [-Dbench.profile=quick] test-compile exec:exec
+
+      exec:exec (not exec:java, which runs in-process) forks a real `java` process so the Docker
+      API pin and Byte Buddy flag reach BenchRunner's JVM exactly as they reach surefire/failsafe's
+      forked JVMs above — BenchRunner boots Testcontainers Postgres itself (BenchPostgres).
+    -->
+    <profile>
+      <id>bench</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>${exec-maven-plugin.version}</version>
+            <configuration>
+              <executable>java</executable>
+              <classpathScope>test</classpathScope>
+              <arguments>
+                <argument>-classpath</argument>
+                <classpath/>
+                <argument>-Dapi.version=${docker.api.version}</argument>
+                <argument>-Dnet.bytebuddy.experimental=true</argument>
+                <argument>-Dbench.profile=${bench.profile}</argument>
+                <argument>org.ledger.bench.BenchRunner</argument>
+              </arguments>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

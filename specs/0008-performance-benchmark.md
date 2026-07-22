@@ -1,6 +1,6 @@
 # SPEC 0008 — Performance benchmark
 
-Status: draft
+Status: implemented
 Depends on: 0007
 Requirements: FR-34, FR-35, NFR-6, NFR-7, NFR-8
 
@@ -39,14 +39,21 @@ and it is not free. Naming the price of a guarantee is the point.
 
 ## Acceptance criteria (the measurable "done")
 
-- [ ] A results table: transfers/sec and p50/p99 for every cell of the 2×2 matrix.
-- [ ] The **contention crossover point** between optimistic and pessimistic is identified and
-      stated as a number.
-- [ ] The throughput cost of SERIALIZABLE vs READ COMMITTED is quantified as a percentage.
-- [ ] A latency plot is produced and committed.
-- [ ] The claim is stated in one sentence, e.g. *"Sustained X transfers/sec at p99 Y ms under
-      serializable isolation; optimistic wins below contention level C, pessimistic above."*
-- [ ] `make bench` reproduces the table.
+- [x] A results table: transfers/sec and p50/p99 for every cell of the 2×2 matrix.
+      (`docs/bench/results.md`, `docs/bench/results.csv`)
+- [x] The **contention crossover point** between optimistic and pessimistic is identified and
+      stated as a number. Under READ COMMITTED, pessimistic wins at every level measured (crossover
+      = 1, i.e. no window where optimistic pays off in this workload) — the data did not confirm
+      ADR 0006's predicted low-contention optimistic advantage; see ADR 0010. Under SERIALIZABLE,
+      the predicted shape does appear: optimistic wins below contention 32, pessimistic from 32 up.
+- [x] The throughput cost of SERIALIZABLE vs READ COMMITTED is quantified as a percentage: 0.3%
+      for optimistic, 61.4% for pessimistic (ADR 0010).
+- [x] A latency plot is produced and committed. (`docs/bench/latency.svg`)
+- [x] The claim is stated in one sentence: *"Sustained 569 transfers/sec at p99 61 ms under
+      serializable isolation (optimistic strategy, contention 2 threads/hot account); under
+      read_committed, pessimistic wins at every contention level measured — there is no
+      low-contention window where optimistic pays off in this workload."*
+- [x] `make bench` reproduces the table. `make bench-quick` runs a fast 3-level smoke variant.
 
 ## Test plan
 
