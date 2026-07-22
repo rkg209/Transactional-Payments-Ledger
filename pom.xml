@@ -51,6 +51,8 @@
     <!-- Not in the Spring Boot 3.3.x BOM; pinned to the 2.6.x line, which
          tracks Boot 3.3.x / springdoc's own compatibility matrix. -->
     <springdoc-openapi.version>2.6.0</springdoc-openapi.version>
+    <!-- Not in the Spring Boot 3.3.x BOM. SPEC 0009 (NFR-19): JSON log encoder. -->
+    <logstash-logback-encoder.version>7.4</logstash-logback-encoder.version>
 
     <!-- SPEC 0008 — JMH shell for TransferBenchmark; see the `bench` profile below. -->
     <jmh.version>1.37</jmh.version>
@@ -91,6 +93,15 @@
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+
+    <!-- Structured JSON logging (NFR-19). Spring Boot's built-in `logging.structured.format`
+         property arrived in 3.4; this project is pinned to 3.3.5 (ADR 0002's plugin classpath
+         addendum), so the JSON encoder is provided explicitly instead. -->
+    <dependency>
+      <groupId>net.logstash.logback</groupId>
+      <artifactId>logstash-logback-encoder</artifactId>
+      <version>${logstash-logback-encoder.version}</version>
     </dependency>
 
     <!--

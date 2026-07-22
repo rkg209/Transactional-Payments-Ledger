@@ -1,6 +1,10 @@
 package org.ledger.saga;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -14,6 +18,8 @@ import org.ledger.db.TransferRepository;
 import org.ledger.db.generated.tables.records.SagaStepsRecord;
 import org.ledger.db.generated.tables.records.SagasRecord;
 import org.ledger.transfer.TransferService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -29,10 +35,18 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class SagaOrchestrator {
 
+  private static final Logger log = LoggerFactory.getLogger(SagaOrchestrator.class);
+
   private final SagaRepository sagaRepository;
   private final TransferRepository transferRepository;
   private final TransferService transferService;
   private final TransactionTemplate ledgerTransactionTemplate;
+
+  // NFR-20 meters, registered once against held fields (SPEC 0009).
+  private final Counter sagasCompletedCounter;
+  private final Counter sagasCompensatedCounter;
+  private final Counter sagasFailedCounter;
+  private final Timer sagaDurationTimer;
 
   /**
    * Test-only crash-simulation seam: invoked right after each step's forward commit, before the
@@ -46,11 +60,19 @@ public class SagaOrchestrator {
       SagaRepository sagaRepository,
       TransferRepository transferRepository,
       TransferService transferService,
-      TransactionTemplate ledgerTransactionTemplate) {
+      TransactionTemplate ledgerTransactionTemplate,
+      MeterRegistry meterRegistry) {
     this.sagaRepository = sagaRepository;
     this.transferRepository = transferRepository;
     this.transferService = transferService;
     this.ledgerTransactionTemplate = ledgerTransactionTemplate;
+
+    this.sagasCompletedCounter =
+        meterRegistry.counter("ledger.sagas.total", "outcome", "completed");
+    this.sagasCompensatedCounter =
+        meterRegistry.counter("ledger.sagas.total", "outcome", "compensated");
+    this.sagasFailedCounter = meterRegistry.counter("ledger.sagas.total", "outcome", "failed");
+    this.sagaDurationTimer = meterRegistry.timer("ledger.saga.duration");
   }
 
   void setStepCommittedHookForTesting(BiConsumer<SagaContext, Integer> hook) {
@@ -58,6 +80,15 @@ public class SagaOrchestrator {
   }
 
   public SagaResult execute(SagaDefinition definition) {
+    long startNanos = System.nanoTime();
+    try {
+      return executeTimed(definition);
+    } finally {
+      sagaDurationTimer.record(Duration.ofNanos(System.nanoTime() - startNanos));
+    }
+  }
+
+  private SagaResult executeTimed(SagaDefinition definition) {
     SagasRecord sagaRow =
         ledgerTransactionTemplate.execute(
             status -> sagaRepository.insertSaga(definition.type(), definition.toJsonb()));
@@ -81,17 +112,15 @@ public class SagaOrchestrator {
       JSONB forwardJsonb = SagaJson.toJsonb(forwardResult);
       ledgerTransactionTemplate.executeWithoutResult(
           status -> sagaRepository.markStepCompleted(sagaId, leg.stepIndex(), forwardJsonb));
-      ledgerTransactionTemplate.executeWithoutResult(
-          status ->
-              sagaRepository.updateSagaState(sagaId, SagaState.STARTED.name(), leg.stepIndex()));
+      transitionState(sagaId, SagaState.STARTED, SagaState.STARTED, leg.stepIndex());
       completedLegs.add(leg);
 
       stepCommittedHook.accept(ctx, leg.stepIndex());
     }
 
     int lastIndex = definition.legs().size() - 1;
-    ledgerTransactionTemplate.executeWithoutResult(
-        status -> sagaRepository.updateSagaState(sagaId, SagaState.COMPLETED.name(), lastIndex));
+    transitionState(sagaId, SagaState.STARTED, SagaState.COMPLETED, lastIndex);
+    sagasCompletedCounter.increment();
 
     return getSaga(sagaId);
   }
@@ -103,8 +132,7 @@ public class SagaOrchestrator {
   private void compensate(UUID sagaId, SagaContext ctx, List<SagaLeg> completedLegs) {
     int boundary =
         completedLegs.isEmpty() ? 0 : completedLegs.get(completedLegs.size() - 1).stepIndex();
-    ledgerTransactionTemplate.executeWithoutResult(
-        status -> sagaRepository.updateSagaState(sagaId, SagaState.COMPENSATING.name(), boundary));
+    transitionState(sagaId, SagaState.STARTED, SagaState.COMPENSATING, boundary);
 
     try {
       for (int i = completedLegs.size() - 1; i >= 0; i--) {
@@ -115,13 +143,13 @@ public class SagaOrchestrator {
             status -> sagaRepository.markStepCompensated(sagaId, leg.stepIndex()));
       }
     } catch (RuntimeException e) {
-      ledgerTransactionTemplate.executeWithoutResult(
-          status -> sagaRepository.updateSagaState(sagaId, SagaState.FAILED.name(), boundary));
+      transitionState(sagaId, SagaState.COMPENSATING, SagaState.FAILED, boundary);
+      sagasFailedCounter.increment();
       throw new SagaFailedException(sagaId);
     }
 
-    ledgerTransactionTemplate.executeWithoutResult(
-        status -> sagaRepository.updateSagaState(sagaId, SagaState.COMPENSATED.name(), boundary));
+    transitionState(sagaId, SagaState.COMPENSATING, SagaState.COMPENSATED, boundary);
+    sagasCompensatedCounter.increment();
   }
 
   /**
@@ -176,19 +204,15 @@ public class SagaOrchestrator {
 
     if (allCompleted) {
       if (!SagaState.COMPLETED.name().equals(sagaState)) {
-        ledgerTransactionTemplate.executeWithoutResult(
-            status ->
-                sagaRepository.updateSagaState(sagaId, SagaState.COMPLETED.name(), lastIndex));
+        transitionState(sagaId, SagaState.valueOf(sagaState), SagaState.COMPLETED, lastIndex);
       }
       return;
     }
 
     if (!SagaState.COMPENSATING.name().equals(sagaState)
         && !SagaState.COMPENSATED.name().equals(sagaState)) {
-      ledgerTransactionTemplate.executeWithoutResult(
-          status ->
-              sagaRepository.updateSagaState(
-                  sagaId, SagaState.COMPENSATING.name(), sagaRow.getCurrentStep()));
+      transitionState(
+          sagaId, SagaState.valueOf(sagaState), SagaState.COMPENSATING, sagaRow.getCurrentStep());
       sagaState = SagaState.COMPENSATING.name();
     }
 
@@ -207,11 +231,16 @@ public class SagaOrchestrator {
     }
 
     if (!SagaState.COMPENSATED.name().equals(sagaState)) {
-      ledgerTransactionTemplate.executeWithoutResult(
-          status ->
-              sagaRepository.updateSagaState(
-                  sagaId, SagaState.COMPENSATED.name(), sagaRow.getCurrentStep()));
+      transitionState(
+          sagaId, SagaState.valueOf(sagaState), SagaState.COMPENSATED, sagaRow.getCurrentStep());
     }
+  }
+
+  /** Persists a saga-state transition and emits the matching structured log event (NFR-19). */
+  private void transitionState(UUID sagaId, SagaState from, SagaState to, int stepIndex) {
+    ledgerTransactionTemplate.executeWithoutResult(
+        status -> sagaRepository.updateSagaState(sagaId, to.name(), stepIndex));
+    log.info("saga_transition sagaId={} from={} to={} stepIndex={}", sagaId, from, to, stepIndex);
   }
 
   public SagaResult getSaga(UUID sagaId) {

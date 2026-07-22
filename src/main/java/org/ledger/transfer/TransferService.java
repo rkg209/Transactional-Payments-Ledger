@@ -1,6 +1,10 @@
 package org.ledger.transfer;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.UUID;
 import org.ledger.account.AccountNotFoundException;
 import org.ledger.concurrency.ConcurrencyConflictException;
@@ -42,17 +46,37 @@ public class TransferService {
   private final TransactionTemplate ledgerTransactionTemplate;
   private final LedgerConcurrencyProperties concurrencyProperties;
 
+  // NFR-20 meters. Registered once, here, against held fields -- never per call (SPEC 0009,
+  // pattern established by ReconciliationService).
+  private final Counter transfersSuccessCounter;
+  private final Counter transfersRejectedCounter;
+  private final Counter transfersConflictExhaustedCounter;
+  private final Counter transferConflictsCounter;
+  private final Timer transferDurationTimer;
+
   public TransferService(
       TransferRepository transferRepository,
       LedgerEntryRepository ledgerEntryRepository,
       ConcurrencyStrategy concurrencyStrategy,
       TransactionTemplate ledgerTransactionTemplate,
-      LedgerConcurrencyProperties concurrencyProperties) {
+      LedgerConcurrencyProperties concurrencyProperties,
+      MeterRegistry meterRegistry) {
     this.transferRepository = transferRepository;
     this.ledgerEntryRepository = ledgerEntryRepository;
     this.concurrencyStrategy = concurrencyStrategy;
     this.ledgerTransactionTemplate = ledgerTransactionTemplate;
     this.concurrencyProperties = concurrencyProperties;
+
+    this.transfersSuccessCounter =
+        meterRegistry.counter("ledger.transfers.total", "outcome", "success");
+    this.transfersRejectedCounter =
+        meterRegistry.counter("ledger.transfers.total", "outcome", "rejected");
+    this.transfersConflictExhaustedCounter =
+        meterRegistry.counter("ledger.transfers.total", "outcome", "conflict_exhausted");
+    this.transferConflictsCounter =
+        meterRegistry.counter(
+            "ledger.transfer.conflicts.total", "strategy", concurrencyStrategy.name());
+    this.transferDurationTimer = meterRegistry.timer("ledger.transfer.duration");
   }
 
   public TransferResult execute(
@@ -61,27 +85,40 @@ public class TransferService {
       long amountMinor,
       String currency,
       String idempotencyKey) {
-    int maxAttempts = concurrencyProperties.maxAttempts();
-    for (int attempt = 1; ; attempt++) {
-      try {
-        return ledgerTransactionTemplate.execute(
-            status ->
-                executeOnce(fromAccountId, toAccountId, amountMinor, currency, idempotencyKey));
-      } catch (RuntimeException e) {
-        if (!isRetryable(e)) {
-          throw e;
+    long startNanos = System.nanoTime();
+    try {
+      int maxAttempts = concurrencyProperties.maxAttempts();
+      for (int attempt = 1; ; attempt++) {
+        try {
+          TransferResult result =
+              ledgerTransactionTemplate.execute(
+                  status ->
+                      executeOnce(
+                          fromAccountId, toAccountId, amountMinor, currency, idempotencyKey));
+          transfersSuccessCounter.increment();
+          log.info("transfer_applied transferId={} attempts={}", result.transferId(), attempt);
+          return result;
+        } catch (RuntimeException e) {
+          if (!isRetryable(e)) {
+            transfersRejectedCounter.increment();
+            throw e;
+          }
+          if (attempt >= maxAttempts) {
+            transfersConflictExhaustedCounter.increment();
+            throw new OptimisticLockException(attempt);
+          }
+          transferConflictsCounter.increment();
+          log.info(
+              "Retrying transfer {}->{} after conflict, attempt {}/{}",
+              fromAccountId,
+              toAccountId,
+              attempt,
+              maxAttempts);
+          backoff(attempt, concurrencyProperties.backoffBaseMs());
         }
-        if (attempt >= maxAttempts) {
-          throw new OptimisticLockException(attempt);
-        }
-        log.info(
-            "Retrying transfer {}->{} after conflict, attempt {}/{}",
-            fromAccountId,
-            toAccountId,
-            attempt,
-            maxAttempts);
-        backoff(attempt, concurrencyProperties.backoffBaseMs());
       }
+    } finally {
+      transferDurationTimer.record(Duration.ofNanos(System.nanoTime() - startNanos));
     }
   }
 

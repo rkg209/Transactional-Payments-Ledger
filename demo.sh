@@ -115,4 +115,35 @@ fi
 echo "    balances unchanged -- the replay was a true no-op, as SPEC 0003 requires."
 
 echo
+echo "==> Ledger entries for this transfer (must be exactly 2 -- a balanced debit/credit pair,"
+echo "    not 4, proving the replay above posted nothing new):"
+ENTRY_COUNT=$(docker compose exec -T postgres psql -U ledger -d ledger -tA -c \
+  "SELECT count(*) FROM ledger_entries WHERE transfer_id = '${TRANSFER_ID}';")
+echo "    entries for transfer ${TRANSFER_ID}: ${ENTRY_COUNT}"
+if [ "$ENTRY_COUNT" -ne 2 ]; then
+  echo "    MISMATCH -- expected exactly 2 ledger entries for one applied transfer." >&2
+  exit 1
+fi
+
+echo
+echo "==> Sigma(ledger_entries) across the WHOLE ledger, read straight from Postgres:"
+GLOBAL_SUM=$(docker compose exec -T postgres psql -U ledger -d ledger -tA -c \
+  "SELECT coalesce(sum(CASE WHEN direction = 'CREDIT' THEN amount_minor ELSE -amount_minor END), 0) FROM ledger_entries;")
+echo "    Sigma(entries) = ${GLOBAL_SUM}"
+if [ "$GLOBAL_SUM" -ne 0 ]; then
+  echo "    MISMATCH -- the ledger's global invariant does not hold." >&2
+  exit 1
+fi
+
+echo
+echo "=================================================================="
+echo "  Summary -- what this run just proved:"
+echo "=================================================================="
+echo "    - One transfer of 2500 applied exactly once (${ENTRY_COUNT} ledger entries, not 4)."
+echo "    - The total across alice+bob stayed at 10000: no money created or destroyed."
+echo "    - Replaying the SAME Idempotency-Key was a true no-op (X-Idempotent-Replayed: true,"
+echo "      balances unchanged) -- no double-charge."
+echo "    - Sigma(ledger_entries) = ${GLOBAL_SUM} across the entire ledger, not just this transfer."
+
+echo
 echo "==> demo.sh complete."

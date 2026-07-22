@@ -997,3 +997,67 @@ Surefire nor Failsafe; `BenchmarkReportTest` runs under `mvn test`. `make bench-
 passing on every trial.
 
 ---
+
+## [013] SPEC 0009 — Observability, packaging & deploy — 2026-07-22
+**Spec:** SPEC 0009
+**What:** Added structured JSON logging (`logback-spring.xml`, profile-gated `json` vs. console,
+via `logstash-logback-encoder`); moved `org.jooq.tools.LoggerListener: DEBUG` out of the base
+`application.yml` and behind a new `dev` profile document (it was global, an NFR-23 violation:
+every bind variable, including amounts and account UUIDs, logged at DEBUG in every environment).
+Registered Micrometer meters: `ledger.transfers.total{outcome}`, `ledger.transfer.conflicts.total`,
+`ledger.transfer.duration` in `TransferService`; `ledger.sagas.total{outcome}`,
+`ledger.saga.duration` in `SagaOrchestrator`; a `reconciliation.status` gauge in
+`ReconciliationService`. Added structured lifecycle log events (`transfer_applied`,
+`saga_transition`, `reconciliation_run`) alongside the existing counters. Hardened `Dockerfile`
+(base image pinned by digest, `JAVA_TOOL_OPTIONS` for container-aware heap sizing and fast OOM
+exit) and `docker-compose.yml` (`SPRING_PROFILES_ACTIVE=json`, `no-new-privileges`, `read_only`
+root filesystem with a `tmpfs` `/tmp`). Wrote ADR 0011 documenting why the image stays single-stage
+with a host-built jar. Extended `demo.sh` with a ledger-entry-count check (exactly 2 per transfer,
+proving the idempotent replay posted nothing new), a live Σ(ledger_entries) = 0 read from Postgres,
+and a closing summary block. Wrote the root `README.md`: headline result (verbatim from a real
+harness run, not invented), a Mermaid architecture diagram, real harness/benchmark results tables,
+an ADR index, reproduction steps, and the SDD workflow. Added
+`src/test/java/org/ledger/observability/{MetricsIT,LoggingIT,DebugLoggingPolicyTest}.java`.
+**Why:** NFR-19 (JSON logs), NFR-20 (metrics), NFR-21 (`/actuator/prometheus`, already wired but
+untested), NFR-23 (no amounts/IDs at DEBUG in prod), FR-33 (results table), DR-1/2/8/12 were
+unimplemented, partially wired, or undemonstrated. DR-11 (free-tier live URL) is explicitly
+deferred per the plan's own decision record.
+**How:** Chose `logstash-logback-encoder` over Spring Boot's built-in structured-logging support
+(`logging.structured.format.console`) because that feature landed in Boot 3.4 and this project is
+pinned to 3.3.5 (ADR 0002's plugin-classpath addendum). Kept the Dockerfile single-stage rather
+than forcing a conventional build stage: jOOQ codegen needs a live Docker daemon during `mvn
+package` itself (ADR 0002), which a `docker build` stage cannot reach without Docker-in-Docker, and
+committing generated code to sidestep that would violate CLAUDE.md's "never commit generated jOOQ
+code" rule for no reason but Dockerfile aesthetics (ADR 0011).
+**Issues faced:** (1) `<springProfile>` cannot be nested inside `<root>`, `<appender>`, or
+`<logger>` in Spring Boot's Joran extension — it fails fast with a sanity-checker warning and
+silently drops the nested content. (2) `/actuator/prometheus` 404'd ("No static resource
+actuator/prometheus") in *every* test context regardless of
+`management.endpoints.web.exposure.include`, even with `include: '*'` — confirmed via
+`/actuator/conditions` that `PrometheusMetricsExportAutoConfiguration`'s `OnMetricsExportEnabledCondition`
+was resolving `management.defaults.metrics.export.enabled` to `false`. Bisected against a
+`git stash` of the unmodified codebase and reproduced the same 404 there too, proving it predates
+this spec's changes entirely. (3) `LoggingIT` passed standalone but failed intermittently in the
+full 169-test suite with `JSON_CONSOLE` appender missing from the root logger.
+**Resolution:** (1) Restructured `logback-spring.xml` so each profile branch (`!json`, `json`) owns
+its appender *and* its own `<root>` outright, instead of a shared `<root>` with per-branch
+`<appender-ref>` elements. (2) Root-caused to `@SpringBootTest`'s automatic
+`DisableObservabilityContextCustomizer` — a test-only Boot behavior that silences metrics
+export/observability autoconfiguration by default so tests don't pay tracing/export overhead
+unless explicitly opted in. Production and `docker compose up` were never affected (confirmed live:
+`curl localhost:8080/actuator/prometheus` after a real `docker compose up --build` serves every
+named metric). Fixed by adding `@AutoConfigureObservability` to `MetricsIT`. (3) Root-caused to
+Logback's `LoggerContext` being a single JVM-wide singleton shared by every Spring context booted
+in the same Surefire/Failsafe fork (reuseForks=true, the default): whichever test class most
+recently triggered a cold `SpringApplication` boot decides the *live* Logback configuration,
+independent of which profile the *current* test (possibly reusing a cached Spring context) actually
+wants. Fixed by having `LoggingIT` force-reinitialize Logback from its own `Environment` --
+`LoggingSystem.cleanUp()` then `initialize(...)` in `@BeforeEach` -- making the test deterministic
+regardless of suite ordering instead of depending on an incidental race. Lesson: testing
+profile-conditional logging configuration inside a shared-JVM test suite needs an explicit,
+test-owned reinitialization step; relying on whatever Boot happened to configure at some earlier
+context's boot is not a stable foundation. Verified: full suite green (169 tests), `make
+concurrency-test` and `./demo.sh` both run clean against a real `docker compose up` stack, and
+`/actuator/prometheus` confirmed live in the container with every NFR-20 metric present and moving.
+
+---

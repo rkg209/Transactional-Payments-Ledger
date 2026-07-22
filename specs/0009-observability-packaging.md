@@ -1,6 +1,6 @@
 # SPEC 0009 — Observability, packaging & deploy
 
-Status: draft
+Status: implemented
 Depends on: 0008
 Requirements: FR-33, NFR-19, NFR-20, NFR-21, NFR-23, DR-1, DR-2, DR-8, DR-11, DR-12
 
@@ -41,14 +41,15 @@ that is part of what is being demonstrated.
 
 ## Acceptance criteria (the measurable "done")
 
-- [ ] `docker compose up` + `make concurrency-test` reproduce the headline result on a clean machine.
-- [ ] `/actuator/prometheus` serves all the named metrics.
-- [ ] Logs are structured JSON and correlate by `requestId`.
-- [ ] README tells the whole story: headline, diagram, results table, ADRs, reproduction steps,
+- [x] `docker compose up` + `make concurrency-test` reproduce the headline result on a clean machine.
+- [x] `/actuator/prometheus` serves all the named metrics.
+- [x] Logs are structured JSON and correlate by `requestId`.
+- [x] README tells the whole story: headline, diagram, results table, ADRs, reproduction steps,
       and the SDD workflow.
-- [ ] `demo.sh` visibly demonstrates deduplication and conservation of money.
-- [ ] No monetary amounts or account IDs logged at DEBUG under the prod profile.
-- [ ] (Optional) A live URL.
+- [x] `demo.sh` visibly demonstrates deduplication and conservation of money.
+- [x] No monetary amounts or account IDs logged at DEBUG under the prod profile.
+- [ ] (Optional, deferred) A live URL — DR-11 explicitly deferred per plan; out of scope for this
+      pass.
 
 ## Test plan
 

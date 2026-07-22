@@ -12,6 +12,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.OffsetDateTime;
 import java.util.Optional;
 import java.util.UUID;
@@ -38,6 +39,11 @@ class TransferServiceRetryUnitTest {
   private final TransferRepository transferRepository = mock(TransferRepository.class);
   private final LedgerEntryRepository ledgerEntryRepository = mock(LedgerEntryRepository.class);
   private final ConcurrencyStrategy strategy = mock(ConcurrencyStrategy.class);
+  private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+
+  {
+    when(strategy.name()).thenReturn("mock");
+  }
 
   private final TransactionTemplate inlineTransactionTemplate =
       new TransactionTemplate() {
@@ -72,7 +78,8 @@ class TransferServiceRetryUnitTest {
             ledgerEntryRepository,
             strategy,
             inlineTransactionTemplate,
-            new LedgerConcurrencyProperties(5, 1));
+            new LedgerConcurrencyProperties(5, 1),
+            meterRegistry);
 
     service.execute(fromId, toId, 100L, "USD", "retry-unit-key");
 
@@ -101,7 +108,8 @@ class TransferServiceRetryUnitTest {
             ledgerEntryRepository,
             strategy,
             inlineTransactionTemplate,
-            new LedgerConcurrencyProperties(1, 1));
+            new LedgerConcurrencyProperties(1, 1),
+            meterRegistry);
 
     assertThatThrownBy(() -> service.execute(fromId, toId, 100L, "USD", "retry-unit-key-exhausted"))
         .isInstanceOf(OptimisticLockException.class)

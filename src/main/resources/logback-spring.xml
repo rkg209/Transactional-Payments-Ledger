@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPEC 0009 (NFR-19). Two independent output shapes, chosen by Spring profile, not by environment
+  detection:
+
+  - No "json" profile active (local dev, `mvn test`): Spring Boot's own default console appender,
+    exactly what ran before this file existed, so local/test output stays human-readable.
+  - "json" profile active (docker-compose's `app` service, SPRING_PROFILES_ACTIVE=json): one JSON
+    object per line via logstash-logback-encoder, carrying `timestamp`, `level`, `logger`,
+    `thread`, `message`, every MDC entry (so `requestId` — see RequestIdFilter — is a top-level
+    field, not buried in `message`), and the exception stacktrace when present.
+-->
+<configuration>
+  <include resource="org/springframework/boot/logging/logback/defaults.xml" />
+
+  <!-- Each branch owns its appender AND its root outright: Spring Boot's Joran extension rejects
+       a springProfile nested inside root/appender/logger (fails fast at configuration time), so
+       the conditional has to wrap whole top-level elements instead. -->
+  <springProfile name="!json">
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml" />
+    <root level="INFO">
+      <appender-ref ref="CONSOLE" />
+    </root>
+  </springProfile>
+
+  <springProfile name="json">
+    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+      <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+        <fieldNames>
+          <timestamp>timestamp</timestamp>
+          <logger>logger</logger>
+          <thread>thread</thread>
+          <level>level</level>
+          <message>message</message>
+          <levelValue>[ignore]</levelValue>
+          <version>[ignore]</version>
+        </fieldNames>
+      </encoder>
+    </appender>
+    <root level="INFO">
+      <appender-ref ref="JSON_CONSOLE" />
+    </root>
+  </springProfile>
+</configuration>

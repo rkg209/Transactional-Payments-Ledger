@@ -38,8 +38,18 @@ services:
       SPRING_DATASOURCE_PASSWORD: ledger
       CONCURRENCY_STRATEGY: pessimistic
       ISOLATION_LEVEL: read_committed
+      # NFR-19: one JSON object per stdout line (logback-spring.xml's "json" profile), not the
+      # human-readable console pattern local dev/tests get.
+      SPRING_PROFILES_ACTIVE: json
     ports:
       - "8080:8080"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      # Tomcat's work dir needs a writable path even under a read-only root; the app itself is
+      # stateless (all durable state lives in Postgres), so nothing else needs one.
+      - /tmp
 
 volumes:
   postgres_data:

@@ -10,7 +10,10 @@
 # the host — where Testcontainers can already reach Docker — and copying the
 # finished artifact in sidesteps that entirely.
 # ---------------------------------------------------------------------------
-FROM eclipse-temurin:21-jre-alpine AS runtime
+# Pinned by digest (the multi-arch index, not a single-platform manifest) rather than the
+# floating `21-jre-alpine` tag, so a build a year from now can't silently pick up a different
+# JRE patch/Alpine base. Re-resolve with `docker buildx imagetools inspect eclipse-temurin:21-jre-alpine`.
+FROM eclipse-temurin:21-jre-alpine@sha256:3f08b13888f595cc49edabea7250ba69499ba25602b267da591720769400e08c AS runtime
 
 RUN addgroup -S ledger && adduser -S ledger -G ledger
 
@@ -26,4 +29,9 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=40s --retries=5 \
     CMD wget -qO- http://localhost:8080/health | grep -q '"status":"UP"' || exit 1
 
-ENTRYPOINT ["java", "-jar", "/app/ledger.jar"]
+# MaxRAMPercentage over -Xmx: lets the heap scale with whatever memory limit the container is
+# actually given (compose, k8s) instead of a value baked into the image. ExitOnOutOfMemoryError
+# turns an OOM into a fast, visible container restart instead of a wedged, half-alive JVM.
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+
+ENTRYPOINT ["java", "-XX:+UseContainerSupport", "-jar", "/app/ledger.jar"]

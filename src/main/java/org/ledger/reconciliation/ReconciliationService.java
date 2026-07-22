@@ -40,6 +40,7 @@ public class ReconciliationService {
   private final TransactionTemplate readOnlyTransaction;
   private final TransactionTemplate reportTransaction;
   private final AtomicLong globalSumGauge = new AtomicLong();
+  private final AtomicLong statusGauge = new AtomicLong(1);
   private final Counter driftCounter;
   private final Counter runsCounter;
 
@@ -58,6 +59,8 @@ public class ReconciliationService {
     // registry.gauge(...) called once, here, against a held AtomicLong: calling it per run would
     // register a new meter every run and leak them.
     meterRegistry.gauge("reconciliation.global_sum", globalSumGauge, AtomicLong::doubleValue);
+    // 1 = pass, 0 = drift (NFR-20): scrapable directly, rather than inferred from a counter delta.
+    meterRegistry.gauge("reconciliation.status", statusGauge, AtomicLong::doubleValue);
     this.driftCounter = meterRegistry.counter("reconciliation.drift.count");
     this.runsCounter = meterRegistry.counter("reconciliation.runs.total");
   }
@@ -69,6 +72,7 @@ public class ReconciliationService {
 
     runsCounter.increment();
     globalSumGauge.set(snapshot.globalSum());
+    statusGauge.set(report.driftDetected() ? 0 : 1);
     if (report.driftDetected()) {
       driftCounter.increment(snapshot.drifted().size() + (snapshot.globalSum() != 0 ? 1 : 0));
       log.error(
@@ -81,6 +85,12 @@ public class ReconciliationService {
               .map(AccountDrift::accountId)
               .toList());
     }
+    log.info(
+        "reconciliation_run runId={} globalSum={} driftedCount={} status={}",
+        report.id(),
+        snapshot.globalSum(),
+        snapshot.drifted().size(),
+        report.driftDetected() ? "DRIFT" : "PASS");
     return report;
   }
 

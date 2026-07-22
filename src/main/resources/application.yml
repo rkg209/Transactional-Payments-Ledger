@@ -76,4 +76,17 @@ logging:
   level:
     root: INFO
     org.ledger: INFO
+
+---
+# NFR-23: bind-variable logging (amounts, account UUIDs pass through here) is a dev-only
+# convenience, never active under the base config docker-compose/prod ship with. Enable
+# explicitly with SPRING_PROFILES_ACTIVE=dev (or alongside `json`, though the two are not
+# mutually exclusive) for local debugging only.
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+logging:
+  level:
     org.jooq.tools.LoggerListener: DEBUG
